@@ -365,7 +365,7 @@ def parse_period(question):
                 end_exclusive = datetime(year, month + 1, 1)
             return start, end_exclusive
 
-    quarter = re.search(r"\b(?:q|quarter\s*)?([1-4])\s*(?:st|nd|rd|th)?\s+quarter\s+(20\d{2})\b", text)
+    quarter = re.search(r"\bq([1-4])\s+(20\d{2})\b", text)
     if quarter:
         q = int(quarter.group(1))
         year = int(quarter.group(2))
@@ -907,8 +907,21 @@ def answer(question):
 
 @app.on_event("startup")
 def startup():
-    threading.Thread(target=lambda: load(force=True), daemon=True).start()
-
+    def validate():
+        load(force=True)
+        checks = [
+            "In April 2026, what was the top-selling product by revenue (in USD)?",
+            "How many distinct customers have bought a Juicer (paid orders only)?",
+            "How many different customers placed at least one paid order for a Mixer?",
+            "How many different customers placed at least one paid order for a Grinder?",
+            "What is the average paid order value in USD for the East region?",
+            "What was the total revenue in USD from the West region in February 2026?",
+            "What was the total revenue in USD from the North region in January 2026?",
+            "How much did Central earn in March 2026, in US dollars?",
+        ]
+        for q in checks:
+            print("VALIDATION", q, "=>", answer(q), flush=True)
+    threading.Thread(target=validate, daemon=True).start()
 
 @app.get("/")
 def root():
