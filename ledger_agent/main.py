@@ -284,7 +284,18 @@ def root():return {"service":"Acme Appliances order ledger agent","status":"ok"}
 
 @app.get("/health")
 def health():
-    return {"ok": True, "ready": READY, "rows": len(CACHE["rows"]), "load_error": LOAD_ERROR}
+    sample = CACHE["rows"][:3]
+    regions = sorted({str(val(r,"region")) for r in CACHE["rows"] if val(r,"region") not in (None,"")})
+    dates = [dt(val(r,"order_date")) for r in CACHE["rows"] if dt(val(r,"order_date"))]
+    info = {
+        "keys": list(sample[0].keys()) if sample else [],
+        "regions": regions[:30],
+        "region_count": len(regions),
+        "date_min": min(dates).isoformat() if dates else None,
+        "date_max": max(dates).isoformat() if dates else None
+    }
+    print("HEALTH_DIAG", json.dumps(info, default=str), flush=True)
+    return {"ok": True, "ready": READY, "rows": len(CACHE["rows"]), "load_error": LOAD_ERROR, "diag": info}
 
 @app.post("/answer")
 def route(req:Ask):
