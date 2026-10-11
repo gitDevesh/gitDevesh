@@ -1,6 +1,7 @@
 name: Keep Ledger Agent Warm
 
 on:
+  push:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
