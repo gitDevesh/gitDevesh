@@ -315,32 +315,62 @@ def usd_amount(row):
     return order_amount(row) * fx_rate(get_value(row, "currency"))
 
 
-def is_refunded(row):
-    """Return whether the current order row records a refund."""
-    status = normalize_text(get_value(row, "status"))
-    if "refund" in status or "refunded" in status:
+def explicit_refund_value(row):
+    """Interpret a refund indicator/value without treating arbitrary text as a number."""
+    value = get_value(row, "refund")
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return Decimal(str(value))
+    text = normalize_text(value)
+    if text in {"true", "yes", "y", "refunded", "refund"}:
         return True
+    if text in {"false", "no", "n", "not refunded", "none", "null"}:
+        return False
+    try:
+        return Decimal(str(value).replace(",", "").replace("$", "").strip())
+    except InvalidOperation:
+        # Unknown labels are not silently interpreted as a positive refund.
+        return None
 
-    explicit_refund = get_value(row, "refund")
-    if isinstance(explicit_refund, bool):
-        return explicit_refund
-    if explicit_refund not in (None, ""):
-        return parse_number(explicit_refund) != 0
 
-    return False
+def is_refunded(row):
+    """Determine refund status from explicit refund data or an affirmative status."""
+    explicit = explicit_refund_value(row)
+    if isinstance(explicit, bool):
+        if explicit:
+            return True
+        # An explicit negative flag is authoritative.
+        return False
+    if isinstance(explicit, Decimal):
+        if explicit != 0:
+            return True
+
+    status = normalize_text(get_value(row, "status"))
+    # Avoid substring matching: "not refunded" and "non-refunded" are not refunds.
+    negative_statuses = {
+        "not refunded", "non refunded", "no refund", "refund rejected",
+        "refund failed", "refund cancelled", "refund canceled",
+    }
+    if status in negative_statuses:
+        return False
+    return status in {
+        "refund", "refunded", "partially refunded", "partially refund",
+        "refund issued", "refund complete", "refund completed",
+    }
 
 
 def refund_amount(row):
-    explicit_refund = get_value(row, "refund")
-    if explicit_refund not in (None, ""):
-        return abs(parse_number(explicit_refund)) * fx_rate(
-            get_value(row, "currency")
-        )
-
+    explicit = explicit_refund_value(row)
+    if isinstance(explicit, Decimal):
+        return abs(explicit) * fx_rate(get_value(row, "currency"))
+    if explicit is False:
+        return Decimal("0")
     status = normalize_text(get_value(row, "status"))
-    if "refund" in status or "refunded" in status:
+    if is_refunded(row):
         return abs(usd_amount(row))
-
     return Decimal("0")
 
 
