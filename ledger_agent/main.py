@@ -55,6 +55,21 @@ def dt(x):
     try:return dtparser.parse(str(x)) if x else None
     except:return None
 
+def _tokens_to_row(tokens):
+    row = {}
+    for raw in tokens:
+        s = str(raw).strip()
+        s = re.sub(r'^\s*[{"]*', '', s)
+        s = re.sub(r'[}\"]*\s*$', '', s)
+        if ':' not in s:
+            continue
+        k, v = s.split(':', 1)
+        k = k.strip().strip('"')
+        v = v.strip().strip('"').strip('}')
+        if k:
+            row[nk(k)] = v
+    return row
+
 def rec(o):
     if isinstance(o, list):
         out = []
@@ -62,38 +77,24 @@ def rec(o):
             if not isinstance(x, dict):
                 out.extend(rec(x))
                 continue
-
-            raw_keys = [str(k) for k in x.keys()]
-            looks_embedded = any(":" in k for k in raw_keys)
-            if looks_embedded:
-                row = {}
-                for raw in raw_keys:
-                    s = raw.strip()
-                    s = re.sub(r'^\\s*[{"\\s]*', '', s)
-                    s = re.sub(r'[}"\\s]*$\\s*', '', s)
-                    if ":" not in s:
-                        continue
-                    k, v = s.split(":", 1)
-                    k = k.strip().strip('"').strip()
-                    v = v.strip().strip('"').strip()
-                    if k:
-                        row[nk(k)] = v
-                if row:
-                    out.append(row)
-                continue
-
-            normal = {nk(k): v for k, v in x.items()}
-            if normal:
-                out.append(normal)
+            raw_keys = list(x.keys())
+            raw_vals = list(x.values())
+            if any(':' in str(k) for k in raw_keys):
+                row_from_keys = _tokens_to_row(raw_keys)
+                row_from_vals = _tokens_to_row(raw_vals)
+                if row_from_keys:
+                    out.append(row_from_keys)
+                if row_from_vals:
+                    out.append(row_from_vals)
+            else:
+                out.append({nk(k): v for k, v in x.items()})
         return out
-
     if isinstance(o, dict):
         normal = {nk(k): v for k, v in o.items()}
-        if any(k in normal for k in ("id", "order_id", "customer", "region", "product", "amount", "status", "created_at")):
+        if any(k in normal for k in ('id', 'order_id', 'customer', 'region', 'product', 'amount', 'status', 'created_at')):
             return [normal]
-
-        cols = o.get("columns")
-        rr = o.get("rows")
+        cols = o.get('columns')
+        rr = o.get('rows')
         if isinstance(cols, list) and isinstance(rr, list):
             result = []
             for row in rr:
@@ -103,9 +104,7 @@ def rec(o):
                     result.append({nk(k): v for k, v in row.items()})
             if result:
                 return result
-
         return sum((rec(x) for x in o.values()), [])
-
     return []
 
 def get(u):
