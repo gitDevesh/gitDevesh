@@ -1,6 +1,7 @@
 import csv, io, json, os, re, time
 from collections import defaultdict
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import urlparse, parse_qsl, urlencode
 
@@ -51,9 +52,20 @@ def num(x):
 def fmt(x):
     return "$"+format(num(x).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP),".2f")
 
+IST = ZoneInfo("Asia/Kolkata")
+
 def dt(x):
-    try:return dtparser.parse(str(x)) if x else None
-    except:return None
+    try:
+        d = dtparser.parse(str(x)) if x else None
+        if not d:
+            return None
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=IST)
+        else:
+            d = d.astimezone(IST)
+        return d.replace(tzinfo=None)
+    except:
+        return None
 
 def _tokens_to_row(tokens):
     row = {}
