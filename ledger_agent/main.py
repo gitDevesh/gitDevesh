@@ -217,6 +217,9 @@ def load(force=False):
                 if cid not in (None, ""):
                     bucket["customers"].add(str(cid).strip().lower())
             print("PRODUCT_CUSTOMER_COUNTS", json.dumps({k: {"orders": v["orders"], "customers": len(v["customers"])} for k,v in sorted(product_stats.items())}, default=str), flush=True)
+            mixer_q = "How many different customers placed at least one paid order for a Mixer?"
+            mf = filt(current_rows, mixer_q)
+            print("MIXER_DEBUG", json.dumps({"product_entity": entity(mixer_q.lower(), current_rows, "product_name"), "customer_name_entity": entity(mixer_q.lower(), current_rows, "customer_name"), "customer_id_entity": entity(mixer_q.lower(), current_rows, "customer_id"), "region_entity": entity(mixer_q.lower(), current_rows, "region"), "filt_rows": len(mf), "filt_paid_customers": len({str(val(r,"customer_id") or val(r,"customer_name")).strip().lower() for r in mf if paid(r) and (val(r,"customer_id") or val(r,"customer_name"))})}, default=str), flush=True)
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["rows"])
