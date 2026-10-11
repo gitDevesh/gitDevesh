@@ -85,6 +85,10 @@ def load(force=False):
             # Fetch the known export URL directly: one network call instead of
             # first discovering links and then walking every orders page.
             export = get(EXPORT_URL)
+            if isinstance(export, dict):
+                print("EXPORT_SHAPE", json.dumps({"type":"dict","keys":list(export.keys())[:30],"value_types":{str(k):type(v).__name__ for k,v in list(export.items())[:10]}}, default=str), flush=True)
+            elif isinstance(export, list):
+                print("EXPORT_SHAPE", json.dumps({"type":"list","length":len(export),"first_type":type(export[0]).__name__ if export else None,"first_keys":list(export[0].keys())[:30] if export and isinstance(export[0],dict) else None,"first_value_types":{str(k):type(v).__name__ for k,v in list(export[0].items())[:10]} if export and isinstance(export[0],dict) else None}, default=str), flush=True)
             rows = rec(export)
 
             # CSV exports arrive as a list of dictionaries and do not need rec().
