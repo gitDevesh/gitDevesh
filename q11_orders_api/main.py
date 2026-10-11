@@ -98,7 +98,7 @@ async def rate_limit_middleware(request: Request, call_next):
             ),
             status_code=429,
             media_type="application/json",
-            headers={"Retry-After": str(retry_after)},
+            headers={"Retry-After": str(retry_after), "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Retry-After"},
         )
 
     return await call_next(request)
