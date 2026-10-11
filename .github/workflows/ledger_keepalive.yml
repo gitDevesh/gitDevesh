@@ -1,0 +1,14 @@
+name: Keep Ledger Agent Warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping ledger agent
+        run: |
+          curl --fail --silent --show-error --max-time 20 https://iitm-ledger-agent.onrender.com/health
