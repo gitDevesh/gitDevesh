@@ -906,7 +906,14 @@ def answer(question):
 
 @app.on_event("startup")
 def startup():
-    threading.Thread(target=lambda: load(force=True), daemon=True).start()
+    def validate():
+        load(force=True)
+        q = "On average, how many US dollars is a paid South order worth?"
+        filtered = filter_rows(CACHE["rows"], q)
+        paid = [row for row in filtered if is_paid(row)]
+        total = sum((usd_amount(row) for row in paid), Decimal("0"))
+        print("AVERAGE_DEBUG", "intent=", intent(q), "filtered=", len(filtered), "paid=", len(paid), "total=", money(total), "answer=", answer(q), flush=True)
+    threading.Thread(target=validate, daemon=True).start()
 
 @app.get("/")
 def root():
