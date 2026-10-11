@@ -221,7 +221,7 @@ def warm():
                 "region": val(r,"region")
             })
         print("WARM_DIAG", json.dumps(diag, default=str), flush=True)
-        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?", "What is the average paid order value in USD for the East region?", "How many different customers placed at least one paid order for a Grinder?"]:
+        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?", "What is the average paid order value in USD for the East region?", "How many different customers placed at least one paid order for a Grinder?", "How many different customers placed at least one paid order for a Mixer?", "How many different customers placed at least one paid order for a Mixer?"]:
             try:
                 print("SELFTEST", q, "=>", answer(q), flush=True)
             except Exception as e:
@@ -275,10 +275,24 @@ def bounds(q):
         y,mo=map(int,m.groups()); a=datetime(y,mo,1); b=datetime(y+(mo==12),(mo%12)+1,1)-timedelta(microseconds=1); return a,b
     return None,None
 
+def norm_text(x):
+    return re.sub(r"[^a-z0-9]+", " ", str(x).lower()).strip()
+
 def entity(q,rows,k):
-    vals={str(val(r,k)) for r in rows if val(r,k) not in (None,"")}
-    hit=[x for x in vals if x.lower() in q.lower()]
-    return max(hit,key=len) if hit else None
+    qn = norm_text(q)
+    vals = {str(val(r,k)).strip() for r in rows if val(r,k) not in (None,"")}
+    # 1) Prefer an exact canonical value match. This prevents "Mixer Pro"
+    # from being selected when the question asks specifically for "Mixer".
+    exact = [x for x in vals if norm_text(x) == qn]
+    if exact:
+        return max(exact, key=len)
+    # 2) Prefer a value appearing as a complete phrase in the question.
+    phrase = [x for x in vals if re.search(r"(?<![a-z0-9])" + re.escape(norm_text(x)) + r"(?![a-z0-9])", qn)]
+    if phrase:
+        return max(phrase, key=lambda x: len(norm_text(x)))
+    # 3) Last resort: substring, longest match wins.
+    hit = [x for x in vals if norm_text(x) and norm_text(x) in qn]
+    return max(hit, key=lambda x: len(norm_text(x))) if hit else None
 
 def filt(rows,q):
     a,b = bounds(q)
