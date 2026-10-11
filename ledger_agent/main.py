@@ -906,18 +906,7 @@ def answer(question):
 
 @app.on_event("startup")
 def startup():
-    def validate():
-        load(force=True)
-        checks = [
-            "On average, how many US dollars is a paid South order worth?",
-            "What is the average paid order value for South?",
-            "What is the average value of a paid South order in USD?",
-            "What is the average South paid order worth?",
-            "How many paid orders were placed in South?",
-        ]
-        for q in checks:
-            print("FINAL_CHECK", q, "=> intent=", intent(q), "answer=", answer(q), flush=True)
-    threading.Thread(target=validate, daemon=True).start()
+    threading.Thread(target=lambda: load(force=True), daemon=True).start()
 
 @app.get("/")
 def root():
