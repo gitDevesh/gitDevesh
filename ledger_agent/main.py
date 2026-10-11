@@ -199,10 +199,24 @@ def load(force=False):
             print(f"ledger loaded: rows={len(rows)} elapsed={time.time()-started:.2f}s indexed={len(aggregates)}", flush=True)
             for key in [("west",2026,2), ("north",2026,1), ("central",2026,3)]:
                 print("DIRECT_TEST", key, "=>", fmt(INDEX["revenue_region_month"].get(key, Decimal("0"))), flush=True)
-            east = [r for r in current(CACHE["rows"]) if str(val(r,"region") or "").lower() == "east" and paid(r)]
+            east = [r for r in current(CACHE["rows"]) if str(val(r,"region") or "").strip().lower() == "east" and paid(r)]
             east_total = sum((usd(r) for r in east), Decimal("0"))
             east_avg = east_total / len(east) if east else Decimal("0")
             print("EAST_AVG_TEST", "count=", len(east), "total=", fmt(east_total), "avg=", fmt(east_avg), flush=True)
+            product_stats = {}
+            current_rows = current(CACHE["rows"])
+            for r in current_rows:
+                if not paid(r):
+                    continue
+                product = str(val(r,"product_name") or "").strip()
+                if not product:
+                    continue
+                bucket = product_stats.setdefault(product, {"orders": 0, "customers": set()})
+                bucket["orders"] += 1
+                cid = val(r, "customer_id") or val(r, "customer_name")
+                if cid not in (None, ""):
+                    bucket["customers"].add(str(cid).strip().lower())
+            print("PRODUCT_CUSTOMER_COUNTS", json.dumps({k: {"orders": v["orders"], "customers": len(v["customers"])} for k,v in sorted(product_stats.items())}, default=str), flush=True)
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["rows"])
