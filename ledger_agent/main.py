@@ -315,6 +315,21 @@ def usd_amount(row):
     return order_amount(row) * fx_rate(get_value(row, "currency"))
 
 
+def is_refunded(row):
+    """Return whether the current order row records a refund."""
+    status = normalize_text(get_value(row, "status"))
+    if "refund" in status or "refunded" in status:
+        return True
+
+    explicit_refund = get_value(row, "refund")
+    if isinstance(explicit_refund, bool):
+        return explicit_refund
+    if explicit_refund not in (None, ""):
+        return parse_number(explicit_refund) != 0
+
+    return False
+
+
 def refund_amount(row):
     explicit_refund = get_value(row, "refund")
     if explicit_refund not in (None, ""):
@@ -742,8 +757,7 @@ def distinct_customer_count(rows):
 def intent(question):
     q = normalize_text(question)
 
-    # Most-specific intents first. This prevents "top-selling ... by revenue"
-    # from being swallowed by the generic revenue handler.
+    # Specific ranking requests before general metric words.
     if (
         re.search(r"\b(top|best|highest|leading|most)\b", q)
         and re.search(r"\b(products?|items?)\b", q)
@@ -773,7 +787,13 @@ def intent(question):
     if re.search(r"\b(how many|number of|count)\b.*\bcustomers?\b", q):
         return "distinct_customers"
 
-    # Average/order-value intent must precede generic order-count intent.
+    # The measure is resolved before generic order counts. Refund count and
+    # refund value are separate metrics and must never share a handler.
+    if re.search(r"\b(refund|refunded|refunds|refundable)\b", q):
+        if re.search(r"\b(how many|number of|count|quantity)\b", q):
+            return "refund_count"
+        return "refund_total"
+
     if re.search(r"\b(average|avg|mean)\b", q) and re.search(r"\border(s)?\b", q):
         return "average_order_value"
 
@@ -782,13 +802,8 @@ def intent(question):
 
     if re.search(r"\b(how many|number of|total)\b.*\b(units?|items?)\b", q):
         return "unit_count"
-    if re.search(r"\b(refund|refunded|refunds)\b", q):
-        return "refund_total"
 
-    if re.search(
-        r"\b(revenue|sales|turnover|earned|earn|made|income)\b",
-        q,
-    ):
+    if re.search(r"\b(revenue|sales|turnover|earned|earn|made|income)\b", q):
         return "revenue_total"
 
     if re.search(r"\b(spend|spent|purchase|purchases|bought)\b", q):
@@ -801,6 +816,7 @@ def intent(question):
         return "price_lookup"
 
     return "unknown"
+
 
 
 def answer(question):
@@ -912,6 +928,18 @@ def answer(question):
 
         total = sum((usd_amount(row) for row in candidates), Decimal("0"))
         return money(total / Decimal(len(candidates)))
+
+    if kind == "refund_count":
+        # Rows are already reconciled to the latest updated_at per order_id.
+        # Count at order grain explicitly rather than summing amounts or rows.
+        refunded_ids = set()
+        for index, row in enumerate(filtered):
+            if not is_refunded(row):
+                continue
+            order_id = get_value(row, "order_id")
+            identity = str(order_id).strip() if order_id not in (None, "") else f"row:{index}"
+            refunded_ids.add(identity)
+        return str(len(refunded_ids))
 
     if kind == "refund_total":
         total = sum((refund_amount(row) for row in filtered), Decimal("0"))
