@@ -204,6 +204,11 @@ def warm():
                 "region": val(r,"region")
             })
         print("WARM_DIAG", json.dumps(diag, default=str), flush=True)
+        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?"]:
+            try:
+                print("SELFTEST", q, "=>", answer(q), flush=True)
+            except Exception as e:
+                print("SELFTEST_ERROR", q, repr(e), flush=True)
     except Exception:
         pass
 
@@ -288,7 +293,14 @@ def answer(q):
     n = q.lower()
 
     if "refund" in n:
-        return fmt(sum((usd(r,True) for r in f),Decimal("0")))
+        total = Decimal("0")
+        for r in f:
+            rv = val(r, "refund")
+            if rv not in (None, ""):
+                total += abs(num(rv)) * rate(val(r, "currency"))
+            elif "refund" in str(val(r, "status") or "").lower():
+                total += abs(amount(r)) * rate(val(r, "currency"))
+        return fmt(total)
 
     if re.search(r"\b(revenue|sales|turnover|earned|earn)\b", n):
         start, end = bounds(n)
