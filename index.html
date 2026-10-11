@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Portfolio</title>
+  <style>
+    :root { --bg:#f6f3ef; --card:#ffffff; --text:#242424; --muted:#6f6a64; --accent:#7b5c70; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Arial,Helvetica,sans-serif; color:var(--text); background:var(--bg); line-height:1.6; }
+    .wrap { max-width:980px; margin:auto; padding:24px; }
+    nav { display:flex; justify-content:space-between; align-items:center; padding:10px 0 30px; }
+    nav a { color:var(--text); text-decoration:none; margin-left:18px; }
+    .hero { padding:70px 0 55px; }
+    .tag { color:var(--accent); font-weight:700; letter-spacing:.08em; text-transform:uppercase; font-size:.82rem; }
+    h1 { font-size:clamp(2.8rem,8vw,5.4rem); line-height:1.02; margin:12px 0 18px; }
+    .lead { max-width:700px; font-size:1.15rem; color:var(--muted); }
+    section { padding:55px 0; }
+    h2 { font-size:2rem; margin:0 0 24px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:18px; }
+    .card { background:var(--card); border-radius:18px; padding:24px; box-shadow:0 8px 30px rgba(0,0,0,.06); }
+    .card h3 { margin-top:0; }
+    .skills { display:flex; flex-wrap:wrap; gap:10px; }
+    .pill { background:#e9e0e5; color:#553d4d; padding:8px 12px; border-radius:999px; font-size:.9rem; }
+    footer { padding:35px 0 55px; color:var(--muted); border-top:1px solid #ddd6d0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <strong>Portfolio</strong>
+      <div>
+        <a href="#about">About</a>
+        <a href="#projects">Projects</a>
+        <a href="#skills">Skills</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <div class="tag">Data • Machine Learning • AI</div>
+      <h1>Building useful things with data.</h1>
+      <p class="lead">
+        Data Analyst and Data Science learner focused on turning messy datasets into
+        clear insights, predictive models, and practical applications.
+      </p>
+    </header>
+
+    <section id="about">
+      <h2>About Me</h2>
+      <div class="card">
+        <p>
+          I work with data analysis, machine learning, APIs, and deep learning.
+          My current focus is strengthening my data science skills through hands-on
+          projects and competitions.
+        </p>
+      </div>
+    </section>
+
+    <section id="projects">
+      <h2>Projects</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Customer Segmentation</h3>
+          <p>Exploring customer behavior with data preprocessing, feature engineering and clustering.</p>
+        </div>
+        <div class="card">
+          <h3>Heavy Machinery Price Prediction</h3>
+          <p>Regression modelling with feature engineering and ensemble methods to improve RMSLE.</p>
+        </div>
+        <div class="card">
+          <h3>FastAPI Applications</h3>
+          <p>Building lightweight APIs for student data and batch sentiment analysis.</p>
+        </div>
+        <div class="card">
+          <h3>Deep Learning Inspection</h3>
+          <p>Image segmentation experiments for detecting and locating industrial surface anomalies.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="skills">
+      <h2>Skills</h2>
+      <div class="skills">
+        <span class="pill">Python</span>
+        <span class="pill">Pandas</span>
+        <span class="pill">NumPy</span>
+        <span class="pill">Scikit-learn</span>
+        <span class="pill">LightGBM</span>
+        <span class="pill">XGBoost</span>
+        <span class="pill">FastAPI</span>
+        <span class="pill">SQL</span>
+        <span class="pill">Machine Learning</span>
+        <span class="pill">Deep Learning</span>
+      </div>
+    </section>
+
+    <footer>
+      © 2026 · Data Portfolio
+    </footer>
+  </div>
+</body>
+</html>
