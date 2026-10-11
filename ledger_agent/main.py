@@ -20,7 +20,7 @@ INDEX = {"revenue_region_month": {}}
 
 ALIASES = {
 "order_id":["order_id","orderid","id"], "customer_id":["customer_id","customerid","customer"],
-"customer_name":["customer_name","customername","customer"], "region":["region","sales_region","region_name","territory","area"], "product_id":["product_id","productid","sku","item_id"],
+"customer_name":["customer_name","customername","customer"], "region":["region","sales_region","region_name","territory","area","sales_area","sales_territory","region_code"], "product_id":["product_id","productid","sku","item_id"],
 "product_name":["product_name","productname","product","item_name","item","description"],
 "status":["status","order_status","payment_status"], "order_date":["order_date","ordered_at","created_at","created","date","timestamp"],
 "updated_at":["updated_at","updated","modified_at","last_updated"], "currency":["currency","currency_code","ccy"],
@@ -141,6 +141,16 @@ def load(force=False):
 def warm():
     try:
         load(force=True)
+        sample = CACHE["rows"][:5]
+        diag = []
+        for r in sample:
+            diag.append({
+                "status": val(r,"status"),
+                "order_date": val(r,"order_date"),
+                "updated_at": val(r,"updated_at"),
+                "region": val(r,"region")
+            })
+        print("WARM_DIAG", json.dumps(diag, default=str), flush=True)
     except Exception:
         pass
 
@@ -153,7 +163,7 @@ def current(rows):
         if not old or (dt(val(r,"updated_at")) and (not dt(val(old,"updated_at")) or dt(val(r,"updated_at"))>dt(val(old,"updated_at")))):d[k]=r
     return list(d.values())+extra
 
-def paid(r):return str(val(r,"status") or "").lower()=="paid"
+def paid(r):return str(val(r,"status") or "").strip().lower()=="paid"
 
 def rate(cur):
     if str(cur or "USD").upper()=="USD":return Decimal("1")
@@ -182,10 +192,10 @@ def usd(r,refund=False):
 
 def bounds(q):
     months="january february march april may june july august september october november december".split()
-    m=re.search(r"\b("+ "|".join(months)+r")\\s+(20\d{2})\b",q.lower())
+    m=re.search(r"\b("+ "|".join(months)+r")\s+(20\d{2})\b",q.lower())
     if m:
         y=int(m.group(2)); mo=months.index(m.group(1))+1; a=datetime(y,mo,1); b=datetime(y+(mo==12),(mo%12)+1,1)-timedelta(microseconds=1); return a,b
-    m=re.search(r"\b(20\d{2})[-/](\\d{1,2})\b",q)
+    m=re.search(r"\b(20\d{2})[-/](\d{1,2})\b",q)
     if m:
         y,mo=map(int,m.groups()); a=datetime(y,mo,1); b=datetime(y+(mo==12),(mo%12)+1,1)-timedelta(microseconds=1); return a,b
     return None,None
@@ -287,12 +297,18 @@ def health():
     sample = CACHE["rows"][:3]
     regions = sorted({str(val(r,"region")) for r in CACHE["rows"] if val(r,"region") not in (None,"")})
     dates = [dt(val(r,"order_date")) for r in CACHE["rows"] if dt(val(r,"order_date"))]
+    region_keys = sorted({k for r in CACHE["rows"][:20] for k in r.keys() if "region" in nk(k) or "territor" in nk(k) or "area" in nk(k)})
     info = {
         "keys": list(sample[0].keys()) if sample else [],
         "regions": regions[:30],
         "region_count": len(regions),
+        "region_keys": region_keys,
         "date_min": min(dates).isoformat() if dates else None,
-        "date_max": max(dates).isoformat() if dates else None
+        "date_max": max(dates).isoformat() if dates else None,
+        "sample_business_fields": [
+            {"status": val(r,"status"), "order_date": val(r,"order_date"), "updated_at": val(r,"updated_at"), "region": val(r,"region")}
+            for r in CACHE["rows"][:5]
+        ]
     }
     print("HEALTH_DIAG", json.dumps(info, default=str), flush=True)
     return {"ok": True, "ready": READY, "rows": len(CACHE["rows"]), "load_error": LOAD_ERROR, "diag": info}
