@@ -756,6 +756,15 @@ def intent(question):
         re.search(r"\b(top|best|highest|leading|largest|most)\b", q)
         and re.search(r"\bcustomers?\b", q)
     ):
+        if re.search(r"\b(orders?|order count|most orders)\b", q):
+            return "top_customer_orders"
+        return "top_customer_revenue"
+
+    if (
+        re.search(r"\b(who|which customer)\b", q)
+        and re.search(r"\b(spent|spend|purchased|bought|revenue|sales)\b", q)
+        and re.search(r"\b(most|highest|largest|maximum|greatest)\b", q)
+    ):
         return "top_customer_revenue"
 
     if re.search(r"\b(distinct|different|unique)\b.*\bcustomers?\b", q):
@@ -826,15 +835,53 @@ def answer(question):
         )[0]
 
     if kind == "top_customer_revenue":
-        totals = group_revenue(filtered, "customer_name")
-        if not totals:
-            totals = group_revenue(filtered, "customer_id")
+        # Aggregate on stable customer IDs so missing/inconsistent display names
+        # cannot split or silently drop a customer's revenue.
+        totals = {}
+        labels = {}
+        for row in filtered:
+            if not is_paid(row):
+                continue
+            customer_id = get_value(row, "customer_id")
+            customer_name = get_value(row, "customer_name")
+            identity = str(customer_id).strip() if customer_id not in (None, "") else (
+                "name:" + normalize_text(customer_name) if customer_name else None
+            )
+            if not identity:
+                continue
+            totals[identity] = totals.get(identity, Decimal("0")) + usd_amount(row)
+            if customer_name not in (None, ""):
+                labels[identity] = str(customer_name).strip()
+            else:
+                labels.setdefault(identity, str(customer_id).strip() if customer_id else identity)
         if not totals:
             return "Unknown"
-        return sorted(
+        winner = sorted(
             totals,
-            key=lambda customer: (-totals[customer], normalize_text(customer)),
+            key=lambda identity: (-totals[identity], normalize_text(labels.get(identity, identity))),
         )[0]
+        return labels.get(winner, winner)
+
+    if kind == "top_customer_orders":
+        counts = {}
+        labels = {}
+        for row in filtered:
+            customer_id = get_value(row, "customer_id")
+            customer_name = get_value(row, "customer_name")
+            identity = str(customer_id).strip() if customer_id not in (None, "") else (
+                "name:" + normalize_text(customer_name) if customer_name else None
+            )
+            if not identity:
+                continue
+            counts[identity] = counts.get(identity, 0) + 1
+            labels[identity] = str(customer_name).strip() if customer_name else str(customer_id).strip()
+        if not counts:
+            return "Unknown"
+        winner = sorted(
+            counts,
+            key=lambda identity: (-counts[identity], normalize_text(labels.get(identity, identity))),
+        )[0]
+        return labels.get(winner, winner)
 
     if kind == "distinct_customers":
         return str(distinct_customer_count(paid_rows(filtered, q)))
