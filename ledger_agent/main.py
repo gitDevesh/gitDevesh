@@ -16,6 +16,7 @@ TTL = 1800
 S = requests.Session()
 S.headers["User-Agent"] = "IITM-Ledger-Agent/1.0"
 CACHE = {"t":0,"rows":[],"rates":{}}
+INDEX = {"revenue_region_month": {}}
 
 ALIASES = {
 "order_id":["order_id","orderid","id"], "customer_id":["customer_id","customerid","customer"],
@@ -101,10 +102,37 @@ def load(force=False):
             else:
                 CACHE["rates"] = {}
 
+            # Precompute regional/monthly paid revenue once at startup.
+            aggregates = defaultdict(lambda: Decimal("0"))
+            latest = {}
+            no_id = []
+            for r in rows:
+                oid = val(r, "order_id")
+                if oid in (None, ""):
+                    no_id.append(r)
+                    continue
+                k = str(oid)
+                oldr = latest.get(k)
+                if oldr is None:
+                    latest[k] = r
+                else:
+                    od = dt(val(oldr, "updated_at"))
+                    nd = dt(val(r, "updated_at"))
+                    if nd and (not od or nd > od):
+                        latest[k] = r
+            for r in list(latest.values()) + no_id:
+                if not paid(r):
+                    continue
+                d = dt(val(r, "order_date"))
+                rg = str(val(r, "region") or "").strip().lower()
+                if d and rg:
+                    aggregates[(rg, d.year, d.month)] += usd(r)
+            INDEX["revenue_region_month"] = dict(aggregates)
+
             CACHE["t"] = time.time()
             READY = bool(rows)
             LOAD_ERROR = None
-            print(f"ledger loaded: rows={len(rows)} elapsed={time.time()-started:.2f}s", flush=True)
+            print(f"ledger loaded: rows={len(rows)} elapsed={time.time()-started:.2f}s indexed={len(aggregates)}", flush=True)
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["rows"])
@@ -200,6 +228,12 @@ def answer(q):
         return fmt(sum((usd(r,True) for r in f),Decimal("0")))
 
     if re.search(r"\b(revenue|sales|turnover|earned|earn)\b", n):
+        start, end = bounds(n)
+        rg = entity(n, rows, "region")
+        if start and end and rg and start.year == end.year and start.month == end.month:
+            z = INDEX["revenue_region_month"].get((rg.strip().lower(), start.year, start.month))
+            if z is not None:
+                return fmt(z)
         return fmt(sum((usd(r) for r in f if paid(r)),Decimal("0")))
 
     if re.search(r"\b(spend|spent|purchase|purchases)\b", n):
