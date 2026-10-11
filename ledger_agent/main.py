@@ -57,9 +57,39 @@ def dt(x):
 
 def rec(o):
     if isinstance(o,list):
-        ds=[{nk(k):v for k,v in x.items()} for x in o if isinstance(x,dict)]
-        return ds if len(ds)>=2 else sum((rec(x) for x in o),[])
-    if isinstance(o,dict): return sum((rec(x) for x in o.values()),[])
+        out=[]
+        for x in o:
+            if isinstance(x,dict):
+                # Normal row: keys are actual field names.
+                normal={nk(k):v for k,v in x.items()}
+                if any(k in normal for k in ("id","order_id","customer","region","product","amount","status","created_at")):
+                    out.append(normal)
+                    continue
+                # The export endpoint also returns compact rows whose field/value
+                # pairs are embedded in the dictionary keys themselves.
+                joined=",".join(str(k) for k in x.keys())
+                pairs=re.findall(r'(?:\\{|,)\\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\\s*:\\s*"?([^",}]+)', joined)
+                if pairs:
+                    out.append({nk(k):v for k,v in pairs})
+                else:
+                    out.extend(rec(x))
+            else:
+                out.extend(rec(x))
+        return out
+    if isinstance(o,dict):
+        normal={nk(k):v for k,v in o.items()}
+        if any(k in normal for k in ("id","order_id","customer","region","product","amount","status","created_at")):
+            return [normal]
+        # Common tabular shape: {columns:[...], rows:[[...], ...]}
+        cols=o.get("columns")
+        rr=o.get("rows")
+        if isinstance(cols,list) and isinstance(rr,list):
+            result=[]
+            for row in rr:
+                if isinstance(row,list): result.append({nk(k):v for k,v in zip(cols,row)})
+                elif isinstance(row,dict): result.append({nk(k):v for k,v in row.items()})
+            if result:return result
+        return sum((rec(x) for x in o.values()),[])
     return []
 
 def get(u):
