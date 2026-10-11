@@ -221,7 +221,7 @@ def warm():
                 "region": val(r,"region")
             })
         print("WARM_DIAG", json.dumps(diag, default=str), flush=True)
-        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?"]:
+        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?", "What is the average paid order value in USD for the East region?"]:
             try:
                 print("SELFTEST", q, "=>", answer(q), flush=True)
             except Exception as e:
