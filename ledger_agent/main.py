@@ -721,6 +721,19 @@ def answer(question):
         total = sum((usd_amount(row) for row in paid_rows), Decimal("0"))
         return money(total / Decimal(len(paid_rows)))
 
+    # Top / highest-value questions.
+    if re.search(r"\b(top|highest|largest|most)\b.*\bproducts?\b", lowered):
+        return top_by_revenue(filtered, "product_name") or "Unknown"
+
+    if "best-selling product" in lowered:
+        return top_by_revenue(filtered, "product_name") or "Unknown"
+
+    if re.search(r"\b(top|highest|largest|most)\b.*\bcustomers?\b", lowered):
+        return top_by_revenue(filtered, "customer_name") or top_by_revenue(
+            filtered, "customer_id"
+        ) or "Unknown"
+
+
     # Revenue questions. Revenue always means paid orders per the API rules.
     if re.search(
         r"\b(revenue|sales|turnover|earned|earn|made|income)\b",
@@ -754,18 +767,6 @@ def answer(question):
             Decimal("0"),
         )
         return money(total)
-
-    # Top / highest-value questions.
-    if re.search(r"\b(top|highest|largest|most)\b.*\bproducts?\b", lowered):
-        return top_by_revenue(filtered, "product_name") or "Unknown"
-
-    if "best-selling product" in lowered:
-        return top_by_revenue(filtered, "product_name") or "Unknown"
-
-    if re.search(r"\b(top|highest|largest|most)\b.*\bcustomers?\b", lowered):
-        return top_by_revenue(filtered, "customer_name") or top_by_revenue(
-            filtered, "customer_id"
-        ) or "Unknown"
 
     # Simple detail lookups.
     if "price" in lowered and len(filtered) == 1:
