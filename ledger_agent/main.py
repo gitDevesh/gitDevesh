@@ -221,7 +221,7 @@ def warm():
                 "region": val(r,"region")
             })
         print("WARM_DIAG", json.dumps(diag, default=str), flush=True)
-        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?", "What is the average paid order value in USD for the East region?"]:
+        for q in ["What was the total revenue in USD from the West region in February 2026?", "What was the total revenue in USD from the North region in January 2026?", "How much did Central earn in March 2026, in US dollars?", "What is the average paid order value in USD for the East region?", "How many different customers placed at least one paid order for a Grinder?"]:
             try:
                 print("SELFTEST", q, "=>", answer(q), flush=True)
             except Exception as e:
@@ -330,6 +330,15 @@ def answer(q):
 
     if re.search(r"\b(spend|spent|purchase|purchases)\b", n):
         return fmt(sum((usd(r) for r in f if paid(r)),Decimal("0")))
+
+    if re.search(r"\b(how many|number of|count)\b.*\bcustomers?\b", n):
+        seen = set()
+        for r in f:
+            if paid(r):
+                cid = val(r, "customer_id") or val(r, "customer_name")
+                if cid not in (None, ""):
+                    seen.add(str(cid))
+        return str(len(seen))
 
     if re.search(r"\b(how many|number of|count)\b.*\borders?\b", n):
         return str(len(f))
