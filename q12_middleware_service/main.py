@@ -93,17 +93,23 @@ async def per_client_rate_limit(request: Request, call_next):
 
         if not allowed:
             request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+            origin = request.headers.get("Origin")
+            headers = {
+                "Retry-After": str(retry_after),
+                "X-Request-ID": request_id,
+                "Access-Control-Expose-Headers": "X-Request-ID",
+            }
+            if origin in EXAM_ORIGINS:
+                headers["Access-Control-Allow-Origin"] = origin
+                headers["Vary"] = "Origin"
+
             return JSONResponse(
                 status_code=429,
                 content={
                     "detail": "rate limit exceeded",
                     "request_id": request_id,
                 },
-                headers={
-                    "Retry-After": str(retry_after),
-                    "X-Request-ID": request_id,
-                    "Access-Control-Expose-Headers": "X-Request-ID",
-                },
+                headers=headers,
             )
 
     return await call_next(request)
