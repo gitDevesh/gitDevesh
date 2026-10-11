@@ -774,9 +774,29 @@ def answer(question):
     return "I could not determine the answer from the ledger."
 
 
+def production_selftest():
+    try:
+        load(force=False)
+        tests = [
+            "How many different customers placed at least one paid order for a Mixer?",
+            "How many different customers placed at least one paid order for a Grinder?",
+            "What is the average paid order value in USD for the East region?",
+            "What was the total revenue in USD from the West region in February 2026?",
+            "How much did Central earn in March 2026, in US dollars?",
+            "How many paid orders were placed for a Mixer?",
+            "How many paid orders were placed for a Grinder?",
+        ]
+        results = {question: answer(question) for question in tests}
+        print("PRODUCTION_SELFTEST " + str(results), flush=True)
+    except Exception as exc:
+        print("PRODUCTION_SELFTEST_ERROR " + repr(exc), flush=True)
+
 @app.on_event("startup")
 def startup_event():
-    threading.Thread(target=lambda: load(force=True), daemon=True).start()
+    def runner():
+        load(force=True)
+        production_selftest()
+    threading.Thread(target=runner, daemon=True).start()
 
 
 @app.get("/")
