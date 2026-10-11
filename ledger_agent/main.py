@@ -198,6 +198,8 @@ def load(force=False):
             READY = bool(rows)
             LOAD_ERROR = None
             print(f"ledger loaded: rows={len(rows)} elapsed={time.time()-started:.2f}s indexed={len(aggregates)}", flush=True)
+            for key in [("west",2026,2), ("north",2026,1), ("central",2026,3)]:
+                print("DIRECT_TEST", key, "=>", fmt(INDEX["revenue_region_month"].get(key, Decimal("0"))), flush=True)
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["rows"])
