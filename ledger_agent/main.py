@@ -764,15 +764,15 @@ def intent(question):
     if re.search(r"\b(how many|number of|count)\b.*\bcustomers?\b", q):
         return "distinct_customers"
 
+    # Average/order-value intent must precede generic order-count intent.
+    if re.search(r"\b(average|avg|mean)\b", q) and re.search(r"\border(s)?\b", q):
+        return "average_order_value"
+
     if re.search(r"\b(how many|number of|count)\b.*\border(s)?\b", q):
         return "order_count"
 
     if re.search(r"\b(how many|number of|total)\b.*\b(units?|items?)\b", q):
         return "unit_count"
-
-    if re.search(r"\b(average|avg|mean)\b.*\border(s)?\b", q):
-        return "average_order_value"
-
     if re.search(r"\b(refund|refunded|refunds)\b", q):
         return "refund_total"
 
@@ -908,11 +908,15 @@ def answer(question):
 def startup():
     def validate():
         load(force=True)
-        q = "On average, how many US dollars is a paid South order worth?"
-        filtered = filter_rows(CACHE["rows"], q)
-        paid = [row for row in filtered if is_paid(row)]
-        total = sum((usd_amount(row) for row in paid), Decimal("0"))
-        print("AVERAGE_DEBUG", "intent=", intent(q), "filtered=", len(filtered), "paid=", len(paid), "total=", money(total), "answer=", answer(q), flush=True)
+        checks = [
+            "On average, how many US dollars is a paid South order worth?",
+            "What is the average paid order value for South?",
+            "What is the average value of a paid South order in USD?",
+            "What is the average South paid order worth?",
+            "How many paid orders were placed in South?",
+        ]
+        for q in checks:
+            print("FINAL_CHECK", q, "=> intent=", intent(q), "answer=", answer(q), flush=True)
     threading.Thread(target=validate, daemon=True).start()
 
 @app.get("/")
