@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Acme Ledger Agent")
 QD = os.environ.get("QUESTION_DATA_URL", "https://exam.sanand.workers.dev/questionData?email=22f3001402%40ds.study.iitm.ac.in&quizSign=nkIi6RI9QCQxp%2BoOGIGTRU%2F4gTBEVZB2AmnY%2Fb7KdLqViMQNCmHYtwLI5reMB%2FG7DEa%2FFue%2FMs1zsdb1U8s5Hh5bplbVRU5J%2BXs90hQzPfp2FlMS8JvK%2Ffk2GXCtaUn9kga8SOqBmBKj8KzWVQzj273aHEw4akNKM9T5K0FpWZkITw2aK8osAH5BsYjZXWv%2B9nHhEwMTtqPrLgisCPulwoUa2hyfpHjPUQ9blFjcnpk%2Fxs8rCKcyKyN44PNK45kLO2yaZ5wgg4dffPVC5wgA4JN0Sy45nO1R6HlPne6M7usACZg%2FRUKy1yyrhTmLa0YM7PfIZ9IqX1ng6z3uvpcGTg%3D%3D&questionId=q-ledger-agent-server&path=%2F")
+EXPORT_URL = os.environ.get("EXPORT_URL", "https://exam.sanand.workers.dev/questionData?email=22f3001402%40ds.study.iitm.ac.in&quizSign=nkIi6RI9QCQxp%2BoOGIGTRU%2F4gTBEVZB2AmnY%2Fb7KdLqViMQNCmHYtwLI5reMB%2FG7DEa%2FFue%2FMs1zsdb1U8s5Hh5bplbVRU5J%2BXs90hQzPfp2FlMS8JvK%2Ffk2GXCtaUn9kga8SOqBmBKj8KzWVQzj273aHEw4akNKM9T5K0FpWZkITw2aK8osAH5BsYjZXWv%2B9nHhEwMTtqPrLgisCPulwoUa2hyfpHjPUQ9blFjcnpk%2Fxs8rCKcyKyN44PNK45kLO2yaZ5wgg4dffPVC5wgA4JN0Sy45nO1R6HlPne6M7usACZg%2FRUKy1yyrhTmLa0YM7PfIZ9IqX1ng6z3uvpcGTg%3D%3D&questionId=q-ledger-agent-server&path=%2Fexport")
 TTL = 1800
 S = requests.Session()
 S.headers["User-Agent"] = "IITM-Ledger-Agent/1.0"
@@ -78,40 +79,36 @@ def load(force=False):
         if CACHE["rows"] and not force and time.time()-CACHE["t"] < TTL:
             READY = True
             return
+        started = time.time()
         try:
-            qd = get(QD)
-            links = qd.get("links", {}) if isinstance(qd, dict) else {}
-            # The challenge provides /export specifically so we do not need
-            # to walk the paginated /orders endpoint on every startup.
-            export = get(links["export"]) if links.get("export") else None
-            rows = rec(export) if export is not None else []
+            # Fetch the known export URL directly: one network call instead of
+            # first discovering links and then walking every orders page.
+            export = get(EXPORT_URL)
+            rows = rec(export)
 
-            # Fallback only when /export is unavailable or empty.
-            if not rows and links.get("orders"):
-                p = urlparse(links["orders"])
-                base = p._replace(query="").geturl()
-                q = dict(parse_qsl(p.query))
-                seen = set()
-                for page in range(1, 200):
-                    q["page"] = str(page)
-                    o = get(base + "?" + urlencode(q))
-                    rs = rec(o)
-                    sig = json.dumps(o, sort_keys=True, default=str)[:12000]
-                    if not rs or sig in seen:
-                        break
-                    seen.add(sig)
-                    rows += rs
-                    if isinstance(o, dict) and (o.get("has_next") is False or (o.get("next_page") is None and page > 1)):
-                        break
+            # CSV exports arrive as a list of dictionaries and do not need rec().
+            if not rows and isinstance(export, list):
+                rows = [{nk(k): v for k, v in x.items()} for x in export if isinstance(x, dict)]
 
             CACHE["rows"] = rows
-            CACHE["rates"] = get(links["rates"]) if links.get("rates") else {}
+
+            # Fetch FX rates only when the ledger actually contains non-USD rows.
+            non_usd = {str(val(r, "currency") or "USD").upper() for r in rows if str(val(r, "currency") or "USD").upper() != "USD"}
+            if non_usd:
+                qd = get(QD)
+                links = qd.get("links", {}) if isinstance(qd, dict) else {}
+                CACHE["rates"] = get(links["rates"]) if links.get("rates") else {}
+            else:
+                CACHE["rates"] = {}
+
             CACHE["t"] = time.time()
             READY = bool(rows)
             LOAD_ERROR = None
+            print(f"ledger loaded: rows={len(rows)} elapsed={time.time()-started:.2f}s", flush=True)
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["rows"])
+            print(f"ledger load failed after {time.time()-started:.2f}s: {exc}", flush=True)
 
 def warm():
     try:
