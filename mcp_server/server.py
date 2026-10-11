@@ -7,12 +7,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 REGISTERED_EMAIL = "22f3001402@ds.study.iitm.ac.in"
 
-mcp = MCPServer(
-    "IITM Exam MCP Server",
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False
-    ),
-)
+mcp = MCPServer("IITM Exam MCP Server")
 
 
 @mcp.tool()
@@ -34,9 +29,14 @@ def solve_challenge(ctx: Context) -> str:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
+    security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
         port=port,
         json_response=True,
+        transport_security=security,
     )
