@@ -56,40 +56,56 @@ def dt(x):
     except:return None
 
 def rec(o):
-    if isinstance(o,list):
-        out=[]
+    if isinstance(o, list):
+        out = []
         for x in o:
-            if isinstance(x,dict):
-                # Normal row: keys are actual field names.
-                normal={nk(k):v for k,v in x.items()}
-                if any(k in normal for k in ("id","order_id","customer","region","product","amount","status","created_at")):
-                    out.append(normal)
-                    continue
-                # The export endpoint also returns compact rows whose field/value
-                # pairs are embedded in the dictionary keys themselves.
-                joined=",".join(str(k) for k in x.keys())
-                pairs=re.findall(r'(?:\\{|,)\\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\\s*:\\s*"?([^",}]+)', joined)
-                if pairs:
-                    out.append({nk(k):v for k,v in pairs})
-                else:
-                    out.extend(rec(x))
-            else:
+            if not isinstance(x, dict):
                 out.extend(rec(x))
+                continue
+
+            raw_keys = [str(k) for k in x.keys()]
+            looks_embedded = any(":" in k for k in raw_keys)
+            if looks_embedded:
+                row = {}
+                for raw in raw_keys:
+                    s = raw.strip()
+                    s = re.sub(r'^\\s*[{"\\s]*', '', s)
+                    s = re.sub(r'[}"\\s]*$\\s*', '', s)
+                    if ":" not in s:
+                        continue
+                    k, v = s.split(":", 1)
+                    k = k.strip().strip('"').strip()
+                    v = v.strip().strip('"').strip()
+                    if k:
+                        row[nk(k)] = v
+                if row:
+                    out.append(row)
+                continue
+
+            normal = {nk(k): v for k, v in x.items()}
+            if normal:
+                out.append(normal)
         return out
-    if isinstance(o,dict):
-        normal={nk(k):v for k,v in o.items()}
-        if any(k in normal for k in ("id","order_id","customer","region","product","amount","status","created_at")):
+
+    if isinstance(o, dict):
+        normal = {nk(k): v for k, v in o.items()}
+        if any(k in normal for k in ("id", "order_id", "customer", "region", "product", "amount", "status", "created_at")):
             return [normal]
-        # Common tabular shape: {columns:[...], rows:[[...], ...]}
-        cols=o.get("columns")
-        rr=o.get("rows")
-        if isinstance(cols,list) and isinstance(rr,list):
-            result=[]
+
+        cols = o.get("columns")
+        rr = o.get("rows")
+        if isinstance(cols, list) and isinstance(rr, list):
+            result = []
             for row in rr:
-                if isinstance(row,list): result.append({nk(k):v for k,v in zip(cols,row)})
-                elif isinstance(row,dict): result.append({nk(k):v for k,v in row.items()})
-            if result:return result
-        return sum((rec(x) for x in o.values()),[])
+                if isinstance(row, list):
+                    result.append({nk(k): v for k, v in zip(cols, row)})
+                elif isinstance(row, dict):
+                    result.append({nk(k): v for k, v in row.items()})
+            if result:
+                return result
+
+        return sum((rec(x) for x in o.values()), [])
+
     return []
 
 def get(u):
