@@ -576,6 +576,11 @@ def load(force=False):
         started = time.time()
 
         try:
+            print("QUESTION_DATA", str(get_json_or_csv(QUESTION_DATA_URL))[:1600], flush=True)
+            qd = get_json_or_csv(QUESTION_DATA_URL)
+            ou = qd.get("links", {}).get("orders") if isinstance(qd, dict) else None
+            if ou:
+                print("ORDERS_PAGE1", str(get_json_or_csv(ou))[:2400], flush=True)
             export = get_json_or_csv(EXPORT_URL)
             rows = parse_export(export)
 
