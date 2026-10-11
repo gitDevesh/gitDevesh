@@ -92,12 +92,11 @@ def rec(o):
             raw_keys = list(x.keys())
             raw_vals = list(x.values())
             if any(':' in str(k) for k in raw_keys):
-                row_from_keys = _tokens_to_row(raw_keys)
-                row_from_vals = _tokens_to_row(raw_vals)
-                if row_from_keys:
-                    out.append(row_from_keys)
-                if row_from_vals:
-                    out.append(row_from_vals)
+                # The export represents each real row in the dictionary VALUES.
+                # The repeated-looking dictionary keys are an artifact of the export.
+                row = _tokens_to_row(raw_vals)
+                if row:
+                    out.append(row)
             else:
                 out.append({nk(k): v for k, v in x.items()})
         return out
@@ -200,6 +199,10 @@ def load(force=False):
             print(f"ledger loaded: rows={len(rows)} elapsed={time.time()-started:.2f}s indexed={len(aggregates)}", flush=True)
             for key in [("west",2026,2), ("north",2026,1), ("central",2026,3)]:
                 print("DIRECT_TEST", key, "=>", fmt(INDEX["revenue_region_month"].get(key, Decimal("0"))), flush=True)
+            east = [r for r in current(CACHE["rows"]) if str(val(r,"region") or "").lower() == "east" and paid(r)]
+            east_total = sum((usd(r) for r in east), Decimal("0"))
+            east_avg = east_total / len(east) if east else Decimal("0")
+            print("EAST_AVG_TEST", "count=", len(east), "total=", fmt(east_total), "avg=", fmt(east_avg), flush=True)
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["rows"])
