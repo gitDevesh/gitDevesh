@@ -556,59 +556,6 @@ def build_indexes(current_rows):
     }
 
 
-def fetch_all_orders(question_data):
-    links = question_data.get("links", {}) if isinstance(question_data, dict) else {}
-    first_url = links.get("orders")
-    if not first_url:
-        raise ValueError("Ledger API did not expose an orders URL")
-
-    first = get_json_or_csv(first_url)
-    if not isinstance(first, dict) or not isinstance(first.get("orders"), list):
-        raise ValueError("Orders API returned an unexpected page shape")
-
-    try:
-        total_pages = int(first.get("pages", 1))
-    except (TypeError, ValueError):
-        total_pages = 1
-
-    orders = list(first["orders"])
-
-    if total_pages <= 1:
-        return orders
-
-    parsed = urlsplit(first_url)
-    base_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-
-    def page_url(page_number):
-        query = dict(base_query)
-        query["page"] = str(page_number)
-        return urlunsplit((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            urlencode(query),
-            parsed.fragment,
-        ))
-
-    page_results = {}
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        futures = {
-            executor.submit(get_json_or_csv, page_url(page)): page
-            for page in range(2, total_pages + 1)
-        }
-        for future in as_completed(futures):
-            page = futures[future]
-            payload = future.result()
-            if not isinstance(payload, dict) or not isinstance(payload.get("orders"), list):
-                raise ValueError(f"Orders API returned an invalid page {page}")
-            page_results[page] = payload["orders"]
-
-    for page in range(2, total_pages + 1):
-        orders.extend(page_results[page])
-
-    return orders
-
-
 def load_orders_from_api(question_data):
     links = question_data.get("links", {}) if isinstance(question_data, dict) else {}
     first_url = links.get("orders")
@@ -849,21 +796,8 @@ def answer(question):
 
 @app.on_event("startup")
 def startup_event():
-    def warm_and_check():
-        load(force=True)
-        print("PRODUCT_CUSTOMER_INDEX", {k: len(v) for k, v in sorted(INDEX["product_paid_customers"].items())}, flush=True)
-        for q in [
-            "How many distinct customers have bought a Juicer (paid orders only)?",
-            "How many different customers placed at least one paid order for a Mixer?",
-            "How many different customers placed at least one paid order for a Grinder?",
-            "How many distinct customers have bought a Blender (paid orders only)?",
-            "How many distinct customers have bought a Kettle (paid orders only)?",
-            "How many distinct customers have bought an Air Fryer (paid orders only)?",
-            "How many distinct customers have bought a Rice Cooker (paid orders only)?",
-            "How many distinct customers have bought a Toaster (paid orders only)?",
-        ]:
-            print("QUERY_CHECK", q, "=>", answer(q), flush=True)
-    threading.Thread(target=warm_and_check, daemon=True).start()
+    threading.Thread(target=lambda: load(force=True), daemon=True).start()
+
 @app.get("/")
 def root():
     return {"service": "Acme Appliances order ledger agent", "status": "ok"}
