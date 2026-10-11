@@ -12,4 +12,4 @@ jobs:
     steps:
       - name: Ping ledger agent
         run: |
-          curl --fail --silent --show-error --max-time 20 https://iitm-ledger-agent.onrender.com/health
+          curl --fail --silent --show-error --max-time 20 https://ledger-agent-production-1b1c.up.railway.app/health
