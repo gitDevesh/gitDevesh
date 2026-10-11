@@ -5,7 +5,7 @@ app = FastAPI(title="IITM Q13 Fragmented LLM")
 
 ANSWER = {
     "A": {
-        "text": "Report job-4390486b: café\nReady ✅",
+        "text": "Report job-4390486b: café\nReady ✓",
         "complete": True,
         "error": None,
     },
