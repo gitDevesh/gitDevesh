@@ -4,6 +4,8 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -552,6 +554,59 @@ def build_indexes(current_rows):
     }
 
 
+def fetch_all_orders(question_data):
+    links = question_data.get("links", {}) if isinstance(question_data, dict) else {}
+    first_url = links.get("orders")
+    if not first_url:
+        raise ValueError("Ledger API did not expose an orders URL")
+
+    first = get_json_or_csv(first_url)
+    if not isinstance(first, dict) or not isinstance(first.get("orders"), list):
+        raise ValueError("Orders API returned an unexpected page shape")
+
+    try:
+        total_pages = int(first.get("pages", 1))
+    except (TypeError, ValueError):
+        total_pages = 1
+
+    orders = list(first["orders"])
+
+    if total_pages <= 1:
+        return orders
+
+    parsed = urlsplit(first_url)
+    base_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+
+    def page_url(page_number):
+        query = dict(base_query)
+        query["page"] = str(page_number)
+        return urlunsplit((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        ))
+
+    page_results = {}
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            executor.submit(get_json_or_csv, page_url(page)): page
+            for page in range(2, total_pages + 1)
+        }
+        for future in as_completed(futures):
+            page = futures[future]
+            payload = future.result()
+            if not isinstance(payload, dict) or not isinstance(payload.get("orders"), list):
+                raise ValueError(f"Orders API returned an invalid page {page}")
+            page_results[page] = payload["orders"]
+
+    for page in range(2, total_pages + 1):
+        orders.extend(page_results[page])
+
+    return orders
+
+
 def load(force=False):
     global READY, LOAD_ERROR
 
@@ -576,25 +631,19 @@ def load(force=False):
         started = time.time()
 
         try:
-            print("QUESTION_DATA", str(get_json_or_csv(QUESTION_DATA_URL))[:1600], flush=True)
-            qd = get_json_or_csv(QUESTION_DATA_URL)
-            ou = qd.get("links", {}).get("orders") if isinstance(qd, dict) else None
-            if ou:
-                print("ORDERS_PAGE1", str(get_json_or_csv(ou))[:2400], flush=True)
-            export = get_json_or_csv(EXPORT_URL)
-            rows = parse_export(export)
-
-            if not rows and isinstance(export, list):
-                rows = [
-                    {nk(key): value for key, value in item.items()}
-                    for item in export
-                    if isinstance(item, dict)
-                ]
+            # The /orders resource is the authoritative ledger. /export is
+            # intentionally not used because its response representation is
+            # not the canonical row structure.
+            question_data = get_json_or_csv(QUESTION_DATA_URL)
+            rows = fetch_all_orders(question_data)
 
             if not rows:
-                raise ValueError("Ledger export contained no rows")
+                raise ValueError("Orders API returned no orders")
 
             CACHE["rows"] = rows
+
+            links = question_data.get("links", {}) if isinstance(question_data, dict) else {}
+            rates_url = links.get("rates")
 
             non_usd = {
                 str(val(row, "currency") or "USD").upper()
@@ -603,50 +652,50 @@ def load(force=False):
             }
 
             if non_usd:
-                question_data = get_json_or_csv(QUESTION_DATA_URL)
-                links = (
-                    question_data.get("links", {})
-                    if isinstance(question_data, dict)
-                    else {}
-                )
-                rate_url = links.get("rates")
-                if not rate_url:
+                if not rates_url:
                     raise ValueError("Ledger API did not expose a rates URL")
-                CACHE["rates"] = get_json_or_csv(rate_url)
+                CACHE["rates"] = get_json_or_csv(rates_url)
             else:
                 CACHE["rates"] = {}
 
             deduped = current_orders(rows)
             CACHE["current_rows"] = deduped
-
             build_indexes(deduped)
 
             CACHE["loaded_at"] = time.time()
             READY = True
             LOAD_ERROR = None
 
+            # Deterministic startup audit. These values are diagnostic only;
+            # every request still computes from the same normalized dataset.
+            product_audit = {}
+            for row in deduped:
+                if not is_paid(row):
+                    continue
+                product = str(val(row, "product_name") or "").strip()
+                customer = val(row, "customer_id") or val(row, "customer_name")
+                if product and customer not in (None, ""):
+                    bucket = product_audit.setdefault(product, set())
+                    bucket.add(str(customer).strip().lower())
+            print(
+                "PRODUCT_CUSTOMER_AUDIT",
+                {product: len(customers) for product, customers in sorted(product_audit.items())},
+                flush=True,
+            )
+
         except Exception as exc:
             LOAD_ERROR = str(exc)
             READY = bool(CACHE["current_rows"])
-
             if not READY:
                 raise
 
         finally:
             elapsed = time.time() - started
-            if READY:
-                print(
-                    f"ledger ready: rows={len(CACHE['current_rows'])} "
-                    f"elapsed={elapsed:.2f}s",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"ledger load failed: elapsed={elapsed:.2f}s "
-                    f"error={LOAD_ERROR}",
-                    flush=True,
-                )
-
+            print(
+                f"ledger ready: raw_orders={len(CACHE["rows"])} "
+                f"current_orders={len(CACHE["current_rows"])} elapsed={elapsed:.2f}s",
+                flush=True,
+            )
 
 def answer(question):
     text = question.strip()
