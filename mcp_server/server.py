@@ -2,7 +2,7 @@ import hashlib
 import os
 import re
 
-from mcp.server import MCPServer, Context
+from mcp.server.mcpserver import MCPServer, Context
 from mcp.server.transport_security import TransportSecuritySettings
 
 REGISTERED_EMAIL = "22f3001402@ds.study.iitm.ac.in"
