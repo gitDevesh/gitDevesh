@@ -655,7 +655,7 @@ def answer(question):
 
     # Distinct customer questions.
     if re.search(r"\b(how many|number of|count)\b.*\bcustomers?\b", lowered):
-        paid_only = "paid" in lowered or "paid order" in lowered
+        paid_only = bool(re.search(r"\b(paid|bought|purchased|purchase)\b", lowered))
         candidate_rows = (
             [row for row in filtered if is_paid(row)] if paid_only else filtered
         )
@@ -695,7 +695,7 @@ def answer(question):
 
     # Average paid order value.
     if re.search(r"\b(average|avg|mean)\b", lowered) and "order" in lowered:
-        paid_rows = [row for row in filtered if is_paid(row)]
+        paid_rows = [row for row in filtered if is_paid(row)] if "paid" in lowered else filtered
         if not paid_rows:
             return "$0.00"
 
