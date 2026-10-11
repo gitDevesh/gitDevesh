@@ -849,7 +849,21 @@ def answer(question):
 
 @app.on_event("startup")
 def startup_event():
-    threading.Thread(target=lambda: load(force=True), daemon=True).start()
+    def warm_and_check():
+        load(force=True)
+        print("PRODUCT_CUSTOMER_INDEX", {k: len(v) for k, v in sorted(INDEX["product_paid_customers"].items())}, flush=True)
+        for q in [
+            "How many distinct customers have bought a Juicer (paid orders only)?",
+            "How many different customers placed at least one paid order for a Mixer?",
+            "How many different customers placed at least one paid order for a Grinder?",
+            "How many distinct customers have bought a Blender (paid orders only)?",
+            "How many distinct customers have bought a Kettle (paid orders only)?",
+            "How many distinct customers have bought an Air Fryer (paid orders only)?",
+            "How many distinct customers have bought a Rice Cooker (paid orders only)?",
+            "How many distinct customers have bought a Toaster (paid orders only)?",
+        ]:
+            print("QUERY_CHECK", q, "=>", answer(q), flush=True)
+    threading.Thread(target=warm_and_check, daemon=True).start()
 @app.get("/")
 def root():
     return {"service": "Acme Appliances order ledger agent", "status": "ok"}
