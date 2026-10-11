@@ -330,14 +330,15 @@ def conversion_rate(currency):
         if isinstance(direct, (int, float, str)) and num(direct):
             return num(direct)
 
-        nested = rates.get("rates", {})
-        if isinstance(nested, dict):
-            direct = (
-                nested.get(str(currency).upper())
-                or nested.get(str(currency).lower())
-            )
-            if isinstance(direct, (int, float, str)) and num(direct):
-                return num(direct)
+        for container_key in ("rates", "usd_per_unit"):
+            nested = rates.get(container_key, {})
+            if isinstance(nested, dict):
+                direct = (
+                    nested.get(str(currency).upper())
+                    or nested.get(str(currency).lower())
+                )
+                if isinstance(direct, (int, float, str)) and num(direct):
+                    return num(direct)
 
     if isinstance(rates, list):
         for item in rates:
