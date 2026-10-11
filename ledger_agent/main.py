@@ -608,7 +608,6 @@ def load(force=False):
                 if not rate_url:
                     raise ValueError("Ledger API did not expose a rates URL")
                 CACHE["rates"] = get_json_or_csv(rate_url)
-                print("RATE_SHAPE", str(CACHE["rates"])[:1200], flush=True)
             else:
                 CACHE["rates"] = {}
 
