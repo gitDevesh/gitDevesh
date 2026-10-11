@@ -298,19 +298,11 @@ def norm_text(x):
 def entity(q,rows,k):
     qn = norm_text(q)
     vals = {str(val(r,k)).strip() for r in rows if val(r,k) not in (None,"")}
-    # 1) Prefer an exact canonical value match. This prevents "Mixer Pro"
-    # from being selected when the question asks specifically for "Mixer".
     exact = [x for x in vals if norm_text(x) == qn]
     if exact:
         return max(exact, key=len)
-    # 2) Prefer a value appearing as a complete phrase in the question.
     phrase = [x for x in vals if re.search(r"(?<![a-z0-9])" + re.escape(norm_text(x)) + r"(?![a-z0-9])", qn)]
-    if phrase:
-        return max(phrase, key=lambda x: len(norm_text(x)))
-    # 3) Last resort: substring, longest match wins.
-    hit = [x for x in vals if norm_text(x) and norm_text(x) in qn]
-    return max(hit, key=lambda x: len(norm_text(x))) if hit else None
-
+    return max(phrase, key=lambda x: len(norm_text(x))) if phrase else None
 def filt(rows,q):
     a,b = bounds(q)
     p = entity(q,rows,"product_name") or entity(q,rows,"product_id")
