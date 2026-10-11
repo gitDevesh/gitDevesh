@@ -18,7 +18,7 @@ CACHE = {"t":0,"rows":[],"rates":{}}
 
 ALIASES = {
 "order_id":["order_id","orderid","id"], "customer_id":["customer_id","customerid","customer"],
-"customer_name":["customer_name","customername","customer"], "product_id":["product_id","productid","sku","item_id"],
+"customer_name":["customer_name","customername","customer"], "region":["region","sales_region","region_name","territory","area"], "product_id":["product_id","productid","sku","item_id"],
 "product_name":["product_name","productname","product","item_name","item","description"],
 "status":["status","order_status","payment_status"], "order_date":["order_date","ordered_at","created_at","created","date","timestamp"],
 "updated_at":["updated_at","updated","modified_at","last_updated"], "currency":["currency","currency_code","ccy"],
@@ -65,24 +65,59 @@ def get(u):
     try:return r.json()
     except:return list(csv.DictReader(io.StringIO(r.text)))
 
-def load():
-    if CACHE["rows"] and time.time()-CACHE["t"]<TTL:return
-    qd=get(QD); links=qd.get("links",{})
-    export=get(links["export"]) if links.get("export") else None
-    order_rows=[]
-    if links.get("orders"):
-        p=urlparse(links["orders"]); base=p._replace(query="").geturl(); q=dict(parse_qsl(p.query))
-        seen=set()
-        for page in range(1,200):
-            q["page"]=str(page); o=get(base+"?"+urlencode(q)); rows=rec(o)
-            sig=json.dumps(o,sort_keys=True,default=str)[:12000]
-            if not rows or sig in seen:break
-            seen.add(sig); order_rows+=rows
-            if isinstance(o,dict) and (o.get("has_next") is False or (o.get("next_page") is None and page>1)):break
-    er=rec(export) if export is not None else []
-    CACHE["rows"]=er if len(er)>=len(order_rows) else order_rows
-    CACHE["rates"]=get(links["rates"]) if links.get("rates") else {}
-    CACHE["t"]=time.time()
+LOAD_LOCK = __import__("threading").Lock()
+READY = False
+LOAD_ERROR = None
+
+def load(force=False):
+    global READY, LOAD_ERROR
+    if CACHE["rows"] and not force and time.time()-CACHE["t"] < TTL:
+        READY = True
+        return
+    with LOAD_LOCK:
+        if CACHE["rows"] and not force and time.time()-CACHE["t"] < TTL:
+            READY = True
+            return
+        try:
+            qd = get(QD)
+            links = qd.get("links", {}) if isinstance(qd, dict) else {}
+            # The challenge provides /export specifically so we do not need
+            # to walk the paginated /orders endpoint on every startup.
+            export = get(links["export"]) if links.get("export") else None
+            rows = rec(export) if export is not None else []
+
+            # Fallback only when /export is unavailable or empty.
+            if not rows and links.get("orders"):
+                p = urlparse(links["orders"])
+                base = p._replace(query="").geturl()
+                q = dict(parse_qsl(p.query))
+                seen = set()
+                for page in range(1, 200):
+                    q["page"] = str(page)
+                    o = get(base + "?" + urlencode(q))
+                    rs = rec(o)
+                    sig = json.dumps(o, sort_keys=True, default=str)[:12000]
+                    if not rs or sig in seen:
+                        break
+                    seen.add(sig)
+                    rows += rs
+                    if isinstance(o, dict) and (o.get("has_next") is False or (o.get("next_page") is None and page > 1)):
+                        break
+
+            CACHE["rows"] = rows
+            CACHE["rates"] = get(links["rates"]) if links.get("rates") else {}
+            CACHE["t"] = time.time()
+            READY = bool(rows)
+            LOAD_ERROR = None
+        except Exception as exc:
+            LOAD_ERROR = str(exc)
+            READY = bool(CACHE["rows"])
+
+def warm():
+    try:
+        load(force=True)
+    except Exception:
+        pass
 
 def current(rows):
     d={}; extra=[]
@@ -122,10 +157,10 @@ def usd(r,refund=False):
 
 def bounds(q):
     months="january february march april may june july august september october november december".split()
-    m=re.search(r"\\b("+ "|".join(months)+r")\\s+(20\\d{2})\\b",q.lower())
+    m=re.search(r"\b("+ "|".join(months)+r")\\s+(20\d{2})\b",q.lower())
     if m:
         y=int(m.group(2)); mo=months.index(m.group(1))+1; a=datetime(y,mo,1); b=datetime(y+(mo==12),(mo%12)+1,1)-timedelta(microseconds=1); return a,b
-    m=re.search(r"\\b(20\\d{2})[-/](\\d{1,2})\\b",q)
+    m=re.search(r"\b(20\d{2})[-/](\\d{1,2})\b",q)
     if m:
         y,mo=map(int,m.groups()); a=datetime(y,mo,1); b=datetime(y+(mo==12),(mo%12)+1,1)-timedelta(microseconds=1); return a,b
     return None,None
@@ -136,13 +171,17 @@ def entity(q,rows,k):
     return max(hit,key=len) if hit else None
 
 def filt(rows,q):
-    a,b=bounds(q); p=entity(q,rows,"product_name") or entity(q,rows,"product_id"); c=entity(q,rows,"customer_name") or entity(q,rows,"customer_id")
+    a,b = bounds(q)
+    p = entity(q,rows,"product_name") or entity(q,rows,"product_id")
+    c = entity(q,rows,"customer_name") or entity(q,rows,"customer_id")
+    rg = entity(q,rows,"region")
     out=[]
     for r in rows:
-        d=dt(val(r,"order_date"))
-        if a and (not d or d<a or d>b):continue
-        if p and str(val(r,"product_name") or val(r,"product_id") or "").lower()!=p.lower():continue
-        if c and str(val(r,"customer_name") or val(r,"customer_id") or "").lower()!=c.lower():continue
+        d = dt(val(r,"order_date"))
+        if a and (not d or d<a or d>b): continue
+        if p and str(val(r,"product_name") or val(r,"product_id") or "").lower()!=p.lower(): continue
+        if c and str(val(r,"customer_name") or val(r,"customer_id") or "").lower()!=c.lower(): continue
+        if rg and str(val(r,"region") or "").lower()!=rg.lower(): continue
         out.append(r)
     return out
 
@@ -155,33 +194,66 @@ def top(rows,k):
     return max(z,key=z.get) if z else ""
 
 def answer(q):
-    load(); rows=current(CACHE["rows"]); f=filt(rows,q); n=q.lower()
-    if "refund" in n:return fmt(sum((usd(r,True) for r in f),Decimal("0")))
-    if re.search(r"\\b(revenue|sales|turnover)\\b",n):return fmt(sum((usd(r) for r in f if paid(r)),Decimal("0")))
-    if re.search(r"\\b(spend|spent|purchase|purchases)\\b",n):return fmt(sum((usd(r) for r in f if paid(r)),Decimal("0")))
-    if re.search(r"\\b(how many|number of|count)\\b.*\\borders?\\b",n):return str(len(f))
-    if re.search(r"\\b(how many|number of|total)\\b.*\\b(units?|items?)\\b",n):
-        z=sum((num(val(r,"quantity")) for r in f),Decimal("0")); return str(int(z)) if z==int(z) else str(z)
-    if re.search(r"\\b(average|avg)\\b",n) and "order" in n:
-        p=[r for r in f if paid(r)]; z=sum((usd(r) for r in p),Decimal("0")); return fmt(z/len(p)) if p else "$0.00"
-    if re.search(r"\\b(top|highest|largest|most)\\b.*\\bproducts?\\b",n) or "best-selling product" in n:return top(f,"product_name") or top(f,"product_id") or "Unknown"
-    if re.search(r"\\b(top|highest|largest|most)\\b.*\\bcustomers?\\b",n):return top(f,"customer_name") or top(f,"customer_id") or "Unknown"
-    if "price" in n and f:return fmt(val(f[-1],"unit_price"))
-    if "status" in n and f:return str(val(f[0],"status") or "")
+    load()
+    rows = current(CACHE["rows"])
+    f = filt(rows,q)
+    n = q.lower()
+
+    if "refund" in n:
+        return fmt(sum((usd(r,True) for r in f),Decimal("0")))
+
+    if re.search(r"\b(revenue|sales|turnover|earned|earn)\b", n):
+        return fmt(sum((usd(r) for r in f if paid(r)),Decimal("0")))
+
+    if re.search(r"\b(spend|spent|purchase|purchases)\b", n):
+        return fmt(sum((usd(r) for r in f if paid(r)),Decimal("0")))
+
+    if re.search(r"\b(how many|number of|count)\b.*\borders?\b", n):
+        return str(len(f))
+
+    if re.search(r"\b(how many|number of|total)\b.*\b(units?|items?)\b", n):
+        z=sum((num(val(r,"quantity")) for r in f),Decimal("0"))
+        return str(int(z)) if z==int(z) else str(z)
+
+    if re.search(r"\b(average|avg)\b", n) and "order" in n:
+        p=[r for r in f if paid(r)]
+        z=sum((usd(r) for r in p),Decimal("0"))
+        return fmt(z/len(p)) if p else "$0.00"
+
+    if re.search(r"\b(top|highest|largest|most)\b.*\bproducts?\b",n) or "best-selling product" in n:
+        return top(f,"product_name") or top(f,"product_id") or "Unknown"
+
+    if re.search(r"\b(top|highest|largest|most)\b.*\bcustomers?\b",n):
+        return top(f,"customer_name") or top(f,"customer_id") or "Unknown"
+
+    if "price" in n and f:
+        return fmt(val(f[-1],"unit_price"))
+
+    if "status" in n and f:
+        return str(val(f[0],"status") or "")
+
     if len(f)==1:
         r=f[0]
-        if "customer" in n:return str(val(r,"customer_name") or val(r,"customer_id") or "")
-        if "product" in n or "item" in n:return str(val(r,"product_name") or val(r,"product_id") or "")
-        if re.search(r"\\b(total|amount|value)\\b",n):return fmt(usd(r))
+        if "customer" in n:
+            return str(val(r,"customer_name") or val(r,"customer_id") or "")
+        if "product" in n or "item" in n:
+            return str(val(r,"product_name") or val(r,"product_id") or "")
+        if re.search(r"\b(total|amount|value)\b",n):
+            return fmt(usd(r))
+
     return "I could not determine the answer from the ledger."
+
+@app.on_event("startup")
+def startup_event():
+    import threading
+    threading.Thread(target=warm, daemon=True).start()
 
 @app.get("/")
 def root():return {"service":"Acme Appliances order ledger agent","status":"ok"}
 
 @app.get("/health")
 def health():
-    try:load();return {"ok":True,"rows":len(CACHE["rows"])}
-    except Exception as e:return {"ok":False,"error":str(e)}
+    return {"ok": True, "ready": READY, "rows": len(CACHE["rows"]), "load_error": LOAD_ERROR}
 
 @app.post("/answer")
 def route(req:Ask):
