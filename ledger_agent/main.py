@@ -15,7 +15,6 @@ from dateutil import parser as dtparser
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-
 app = FastAPI(title="Acme Ledger Agent")
 
 QUESTION_DATA_URL = os.environ.get(
@@ -907,31 +906,7 @@ def answer(question):
 
 @app.on_event("startup")
 def startup():
-    def validate():
-        load(force=True)
-        checks = [
-            "In April 2026, what was the top-selling product by revenue (in USD)?",
-            "Which product generated the most revenue in April 2026?",
-            "What product had the highest sales in April 2026?",
-            "In April 2026, which product sold the most by revenue?",
-            "What was the top selling item in April 2026?",
-            "How many distinct customers have bought a Juicer (paid orders only)?",
-            "How many different customers purchased a Juicer?",
-            "How many customers placed at least one paid order for a Juicer?",
-            "How many different customers placed at least one paid order for a Mixer?",
-            "How many different customers placed at least one paid order for a Grinder?",
-            "How many paid orders were placed for a Juicer?",
-            "How many units of Juicer were sold?",
-            "What is the average paid order value in USD for the East region?",
-            "What was the total revenue in USD from the West region in February 2026?",
-            "What was the total revenue in USD from the North region in January 2026?",
-            "How much did Central earn in March 2026, in US dollars?",
-            "How much revenue did Grinder generate in April 2026?",
-            "What were the total sales for the East region in April 2026?",
-        ]
-        for q in checks:
-            print("QUERY_VARIATION", q, "=>", answer(q), flush=True)
-    threading.Thread(target=validate, daemon=True).start()
+    threading.Thread(target=lambda: load(force=True), daemon=True).start()
 
 @app.get("/")
 def root():
