@@ -248,12 +248,21 @@ def choose_fallback_action(package):
     def matching(patterns, concepts=()):
         found = []
         for paragraph in scan:
-            for pattern in patterns:
-                if re.search(pattern, paragraph, re.I):
-                    if concepts and any(negated(paragraph, concept) for concept in concepts):
-                        continue
-                    found.append(paragraph)
-                    break
+            # Evaluate negation sentence-by-sentence. A denial elsewhere in a
+            # multi-sentence paragraph must not erase a separate affirmative fact.
+            for sentence in re.split(r"(?<=[.!?])\\s+", paragraph):
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                for pattern in patterns:
+                    if re.search(pattern, sentence, re.I):
+                        if concepts and any(negated(sentence, concept) for concept in concepts):
+                            continue
+                        found.append(paragraph)
+                        break
+                else:
+                    continue
+                break
         return found
 
     # An explicit unresolved contradiction takes precedence over ordinary workflow cues.
