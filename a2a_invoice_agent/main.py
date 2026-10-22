@@ -152,104 +152,196 @@ def flatten_text(obj):
     walk(obj)
     return "\n".join(out)
 
-def decision_lines(package):
-    """Return evidence text with document provenance, excluding obvious non-controlling material."""
-    lines = []
-    excluded = re.compile(r"\b(?:archive|archived|training.?decoy|decoy|old example|historical example|cover sheet|superseded|obsolete)\b", re.I)
+def decision_paragraphs(package):
+    """Keep each source paragraph intact so decisive references stay together."""
+    paragraphs = []
+    excluded_path = re.compile(r"\b(?:archive|archived|training.?decoy|decoy|historical|cover.?sheet|superseded|obsolete)\b", re.I)
+    excluded_sentence = re.compile(r"\b(?:archive|archived|training.?decoy|decoy|old example|historical example|cover sheet|superseded|obsolete)\b", re.I)
+
     def walk(value, path=""):
         if isinstance(value, dict):
             for key, child in value.items():
                 walk(child, f"{path} {key}".strip())
         elif isinstance(value, list):
             for i, child in enumerate(value):
-                walk(child, f"{path} item{i}")
+                walk(child, f"{path} item{i}".strip())
         elif isinstance(value, str):
-            # Preserve sentence-level evidence while retaining its source field.
-            for sentence in re.split(r"(?<=[.!?])\s+|\n+", value):
-                sentence = sentence.strip()
-                if not sentence:
+            if excluded_path.search(path):
+                return
+            # Newlines are the strongest available paragraph boundaries in JSON documents.
+            for paragraph in re.split(r"\n\s*\n|\r?\n", value):
+                paragraph = paragraph.strip()
+                if not paragraph:
                     continue
-                if excluded.search(path):
-                    continue
-                # Drop clearly labelled historical/decoy sentences, not a whole
-                # paragraph merely because it mentions an unrelated invoice.
-                if excluded.search(sentence) and re.search(r"\b(?:example|archive|decoy|superseded|obsolete)\b", sentence, re.I):
-                    continue
-                lines.append(f"{path}: {sentence}")
+                # Remove explicitly labelled decoy sentences while retaining the rest.
+                kept = []
+                for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
+                    sentence = sentence.strip()
+                    if sentence and excluded_sentence.search(sentence) and re.search(r"\b(?:example|archive|decoy|superseded|obsolete)\b", sentence, re.I):
+                        continue
+                    if sentence:
+                        kept.append(sentence)
+                if kept:
+                    paragraphs.append(f"{path}: {' '.join(kept)}")
         elif value is not None:
-            lines.append(f"{path}: {value}")
-    walk(package)
-    return lines
+            paragraphs.append(f"{path}: {value}")
 
-def evidence_refs(package, action=None):
-    # Prefer references in current evidence-bearing paragraphs and rank those
-    # whose own sentence supports the proposed action. Preserve reference text.
-    lines = decision_lines(package)
-    if not lines:
-        lines = flatten_text(package).splitlines()
+    walk(package)
+    return paragraphs
+
+def decision_lines(package):
+    """Compatibility helper: evidence-bearing paragraphs, retaining provenance."""
+    return decision_paragraphs(package)
+
+def evidence_refs(package, action=None, controlling_text=None):
+    # Prefer the exact three references in the single paragraph supporting the action.
+    paragraphs = decision_paragraphs(package)
+    if not paragraphs:
+        paragraphs = flatten_text(package).splitlines()
+    action_patterns = {
+      "reject_duplicate": r"\b(?:same commercial invoice|same invoice|duplicate invoice|already paid|previously paid|payment settled)\b",
+      "request_approval": r"\b(?:approval required|requires? approval|needs? approval|delegated authority|approval limit|approval threshold|exceeds? the limit|outside authority)\b",
+      "hold_invoice": r"\b(?:verification pending|awaiting verification|not yet verified|pending confirmation|delivery confirmation|awaiting receipt|pending inspection|on hold)\b",
+      "open_exception": r"\b(?:material conflict|conflicting records|records conflict|discrepancy|mismatch|inconsistent|contradict|does not match|differs from)\b",
+      "settle_invoice": r"\b(?:reconciled|matched to|matched against|within authority|approved for payment|goods received|within the approval limit)\b",
+    }
+    ranked = []
+    for paragraph in paragraphs:
+        refs = list(dict.fromkeys("[" + r.strip() + "]" for r in re.findall(r"\[([^\[\]]{1,100})\]", paragraph) if r.strip()))
+        if len(refs) < 3:
+            continue
+        score = 0
+        if controlling_text and controlling_text in paragraph:
+            score += 100
+        if action and re.search(action_patterns.get(action, r"(?!)"), paragraph, re.I):
+            score += 10
+        # Prefer paragraphs with three or more refs and an action-specific signal.
+        score += min(len(refs), 6)
+        ranked.append((score, refs, paragraph))
+    if ranked:
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        # Never combine evidence from separate paragraphs.
+        return ranked[0][1][:3]
+    # Fallback only when the document doesn't preserve a three-ref paragraph boundary.
     all_refs = []
-    for line in lines:
-        all_refs.extend("[" + r.strip() + "]" for r in re.findall(r"\[([^\[\]]{1,100})\]", line) if r.strip())
-    refs = list(dict.fromkeys(all_refs))
-    if action and refs:
-        keywords = {
-          "reject_duplicate": (r"\balready paid\b", r"\bpreviously paid\b", r"\bpayment settled\b", r"\bsame invoice\b", r"\bduplicate invoice\b"),
-          "request_approval": (r"\bapproval required\b", r"\brequires? approval\b", r"\bdelegated authority\b", r"\bapproval limit\b", r"\bapproval threshold\b"),
-          "hold_invoice": (r"\bverification pending\b", r"\bawaiting verification\b", r"\bnot yet verified\b", r"\bpending confirmation\b", r"\bdelivery confirmation\b"),
-          "open_exception": (r"\bconflict(?:ing)? records?\b", r"\bdiscrepancy\b", r"\bmismatch\b", r"\binconsistent\b", r"\bcontradict"),
-          "settle_invoice": (r"\breconciled\b", r"\bmatched\b", r"\bwithin authority\b", r"\bapproved for payment\b", r"\bgoods received\b"),
-        }.get(action, ())
-        ranked = []
-        for line in lines:
-            if any(re.search(k, line, re.I) for k in keywords):
-                ranked.extend("[" + r.strip() + "]" for r in re.findall(r"\[([^\[\]]{1,100})\]", line) if r.strip())
-        if ranked:
-            ranked = list(dict.fromkeys(ranked))
-            refs = ranked + [r for r in refs if r not in ranked]
-    return refs
+    for paragraph in paragraphs:
+        all_refs.extend("[" + r.strip() + "]" for r in re.findall(r"\[([^\[\]]{1,100})\]", paragraph) if r.strip())
+    return list(dict.fromkeys(all_refs))
 
 def choose_fallback_action(package):
-    # Use evidence sentences, excluding explicit archives/decoys and requiring
-    # affirmative signals. If no safe positive case is established, hold.
-    lines = decision_lines(package)
-    if not lines:
-        lines = flatten_text(package).splitlines()
-    sentences = [line for line in lines if "[" in line and "]" in line] or lines
-    def active_hit(sentence, patterns):
-        low = sentence.lower()
-        # Negated statements do not establish a business action.
-        if re.search(r"\b(?:not|never|no evidence of|not yet|isn't|is not|wasn't|was not|cannot|do not)\b.{0,70}\b(?:paid|duplicate|conflict|discrepancy|mismatch|pending|approval|reconciled|matched|authorized)\b", low):
-            return False
-        return any(re.search(pattern, low, re.I) for pattern in patterns)
-    def hits(patterns):
-        return [s for s in sentences if active_hit(s, patterns)]
-    conflicts = hits([r"\bmaterial conflict\b", r"\bconflicting records\b", r"\brecords conflict\b",
-                      r"\bdiscrepancy\b", r"\bmismatch\b", r"\binconsistent (?:amount|vendor|invoice|records)\b",
-                      r"\b(?:amount|vendor|invoice number)\s+(?:does not match|differs from|conflicts with)\b"])
+    """Classify from affirmative, current case evidence rather than defaulting every case to hold."""
+    paragraphs = decision_paragraphs(package)
+    if not paragraphs:
+        paragraphs = flatten_text(package).splitlines()
+    # Only paragraphs with evidence references should determine an action when available.
+    evidence_paragraphs = [p for p in paragraphs if re.search(r"\[[^\[\]]{1,100}\]", p)]
+    scan = evidence_paragraphs or paragraphs
+
+    def negated(text, concept):
+        # Reject a signal when its own clause explicitly denies it.
+        patterns = [
+            rf"\b(?:not|never|no|without|isn't|is not|wasn't|was not|hasn't|has not|have not|cannot|do not|does not)\b[^.;,]{{0,90}}\b{concept}\b",
+            rf"\b{concept}\b[^.;,]{{0,45}}\b(?:not required|not present|not found|not applicable|has not occurred|hasn't occurred)\b",
+        ]
+        return any(re.search(p, text, re.I) for p in patterns)
+
+    def matching(patterns, concepts=()):
+        found = []
+        for paragraph in scan:
+            for pattern in patterns:
+                if re.search(pattern, paragraph, re.I):
+                    if concepts and any(negated(paragraph, concept) for concept in concepts):
+                        continue
+                    found.append(paragraph)
+                    break
+        return found
+
+    # An explicit unresolved contradiction takes precedence over ordinary workflow cues.
+    conflicts = matching([
+      r"\bmaterial conflict\b", r"\bconflicting (?:invoice|vendor|amount|purchase order|goods receipt|records)\b",
+      r"\brecords? (?:conflict|contradict)\b", r"\b(?:material )?discrepancy\b", r"\bmismatch\b",
+      r"\binconsistent (?:amount|vendor|invoice|records|purchase order)\b",
+      r"\b(?:amount|vendor|invoice number|purchase order|goods receipt)\s+(?:does not match|differs from|conflicts with|contradicts)\b"
+    ], ("conflict", "discrepancy", "mismatch", "contradict"))
     if conflicts:
         return "open_exception", conflicts[0]
-    duplicate = hits([r"\bsame (?:commercial )?invoice\b.{0,100}\b(?:already paid|paid previously|previously paid|payment settled)\b",
-                      r"\b(?:already paid|previously paid|payment settled)\b.{0,100}\bsame (?:commercial )?invoice\b",
-                      r"\bduplicate invoice\b.{0,100}\bpaid\b"])
-    if duplicate:
-        return "reject_duplicate", duplicate[0]
-    pending = hits([r"\b(?:awaiting|pending|not yet completed|not yet verified)\b.{0,80}\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection|reconciliation)\b",
-                    r"\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection)\b.{0,80}\b(?:pending|awaiting|not yet verified)\b"])
+
+    # Duplicate means the exact same commercial invoice was already paid, not merely a
+    # payment for the same vendor or a different invoice number.
+    duplicate_patterns = [
+      r"\b(?:same|identical) (?:commercial )?invoice\b.{0,120}\b(?:already paid|paid previously|previously paid|payment settled|settled in full)\b",
+      r"\b(?:already paid|previously paid|payment settled|settled in full)\b.{0,120}\b(?:same|identical) (?:commercial )?invoice\b",
+      r"\bduplicate invoice\b.{0,100}\b(?:already paid|paid|settled)\b",
+      r"\binvoice number\b.{0,80}\b(?:already paid|payment settled)\b"
+    ]
+    duplicates = matching(duplicate_patterns, ("already paid", "previously paid", "payment settled"))
+    if duplicates:
+        return "reject_duplicate", duplicates[0]
+
+    pending_patterns = [
+      r"\b(?:verification|confirmation|delivery|goods receipt|inspection|reconciliation|acceptance)\b.{0,90}\b(?:pending|awaiting|not yet complete|not yet verified|required)\b",
+      r"\b(?:pending|awaiting|not yet completed|not yet verified)\b.{0,90}\b(?:verification|confirmation|delivery|receipt|inspection|reconciliation|acceptance)\b",
+      r"\bdo not pay until\b", r"\bpayment (?:is )?blocked pending\b"
+    ]
+    pending = matching(pending_patterns, ("pending", "awaiting", "not yet verified"))
     if pending:
         return "hold_invoice", pending[0]
-    approval = hits([r"\b(?:requires?|needs?) approval\b", r"\bapproval required\b",
-                     r"\bexceeds? (?:the )?(?:delegated )?(?:authority|limit|threshold)\b",
-                     r"\babove (?:the )?delegated authority\b", r"\bapproval limit exceeded\b",
-                     r"\bamount\s+(?:is\s+)?over\s+(?:the\s+)?approval threshold\b"])
-    if approval:
-        return "request_approval", approval[0]
-    settled = hits([r"\b(?:fully )?reconciled\b", r"\bmatched (?:to|against) (?:the )?(?:purchase order|po|goods receipt)\b"])
-    authorized = hits([r"\bwithin (?:the )?(?:agent.s )?(?:delegated )?authority\b",
-                       r"\bwithin autonomous authority\b", r"\bbelow (?:the )?approval threshold\b",
-                       r"\bwithin the approval limit\b"])
+
+    approval_patterns = [
+      r"\b(?:requires?|needs?) (?:prior )?approval\b", r"\bapproval required\b",
+      r"\b(?:exceeds?|above|over) (?:the )?(?:delegated )?(?:approval )?(?:authority|limit|threshold)\b",
+      r"\boutside (?:the )?(?:agent.s )?(?:delegated )?authority\b",
+      r"\bamount.{0,60}\b(?:above|over|exceeds?)\b.{0,40}\b(?:limit|threshold|authority)\b",
+      r"\bapproval (?:must|has to) be obtained\b"
+    ]
+    approvals = matching(approval_patterns, ("approval required", "requires approval", "needs approval"))
+    if approvals:
+        return "request_approval", approvals[0]
+
+    # Support numeric authority comparisons when both invoice amount and limit are explicitly stated.
+    # The comparison is only used when the same evidence text identifies a currency/amount context.
+    amount_patterns = [
+      r"\b(?:invoice )?amount\s*[:=]?\s*(?:INR|₹|Rs\.?)\s*([\d,]+(?:\.\d{1,2})?)",
+      r"\b(?:total )?invoice\s+(?:value|total)\s*[:=]?\s*(?:INR|₹|Rs\.?)\s*([\d,]+(?:\.\d{1,2})?)"
+    ]
+    limit_patterns = [
+      r"\b(?:approval|delegated|autonomous)(?: payment)? (?:limit|threshold|authority)\s*[:=]?\s*(?:INR|₹|Rs\.?)\s*([\d,]+(?:\.\d{1,2})?)",
+      r"\b(?:up to|maximum of|limit is)\s*(?:INR|₹|Rs\.?)\s*([\d,]+(?:\.\d{1,2})?)"
+    ]
+    for paragraph in scan:
+        am = next((re.search(p, paragraph, re.I) for p in amount_patterns if re.search(p, paragraph, re.I)), None)
+        lm = next((re.search(p, paragraph, re.I) for p in limit_patterns if re.search(p, paragraph, re.I)), None)
+        if am and lm:
+            try:
+                amount = float(am.group(1).replace(",", ""))
+                limit = float(lm.group(1).replace(",", ""))
+                if amount > limit:
+                    return "request_approval", paragraph
+            except (TypeError, ValueError):
+                pass
+
+    settled = matching([
+      r"\b(?:fully )?reconciled\b", r"\bmatched (?:to|against) (?:the )?(?:purchase order|po|goods receipt|delivery record)\b",
+      r"\bthree[- ]way match (?:is )?(?:complete|confirmed|successful)\b"
+    ], ("not reconciled", "not matched"))
+    authorized = matching([
+      r"\bwithin (?:the )?(?:agent.s )?(?:delegated )?authority\b",
+      r"\bwithin autonomous authority\b", r"\bbelow (?:the )?approval threshold\b",
+      r"\bwithin the approval limit\b", r"\bno approval required\b",
+      r"\bamount is within (?:the )?(?:delegated )?(?:limit|threshold)\b"
+    ], ("not within authority", "not authorized"))
     if settled and authorized:
         return "settle_invoice", settled[0] + " " + authorized[0]
-    return "hold_invoice", "The available evidence does not affirmatively establish reconciliation and delegated authority; payment remains on hold pending verification."
+
+    # A valid invoice that explicitly needs an authorization decision should not be settled.
+    # If evidence says approval is not required and reconciliation is complete, treat as settlement.
+    # Otherwise use hold only when verification is missing; unresolved ambiguity is an exception.
+    validity = matching([r"\binvoice (?:is )?valid\b", r"\bcommercially valid\b", r"\bvalid invoice\b"])
+    if validity and not settled:
+        return "hold_invoice", validity[0]
+    if any(re.search(r"\b(?:conflicting|discrepancy|mismatch|contradict)\b", p, re.I) for p in scan):
+        return "open_exception", next(p for p in scan if re.search(r"\b(?:conflicting|discrepancy|mismatch|contradict)\b", p, re.I))
+    return "hold_invoice", (scan[0] if scan else "No controlling evidence was supplied; payment must not proceed without verification.")
 
 def ai_decide_batch(batch):
     packages = batch.get("packages") or []
