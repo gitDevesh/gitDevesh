@@ -330,7 +330,11 @@ def validate_proposals(batch, raw):
         raise ValueError("A proposal is required for every package.")
     ids=set(); actions=set(); out=[]
     for i,(pkg,pr) in enumerate(zip(packages,raw)):
-        package_id=str(pr.get("packageId") or find_value(pkg,["packageId","package_id","id"],f"package-{i+1}"))
+        expected_package_id=str(find_value(pkg,["packageId","package_id","id"],f"package-{i+1}"))
+        package_id=str(pr.get("packageId") or expected_package_id)
+        # Never let a model substitute, omit, or reorder a package identity.
+        if package_id != expected_package_id:
+            package_id=expected_package_id
         if package_id in ids: raise ValueError("Package IDs must be unique.")
         ids.add(package_id)
         action=pr.get("action")
