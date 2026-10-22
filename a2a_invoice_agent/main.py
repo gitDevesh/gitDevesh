@@ -73,14 +73,16 @@ async def a2a_headers(request: Request, call_next):
         return await call_next(request)
     if request.method == "OPTIONS":
         return JSONResponse(status_code=204, content={})
-    if request.headers.get("A2A-Version") != "1.0":
-        return proto_error(400, "UNSUPPORTED_VERSION", "A2A-Version 1.0 is required.")
-    if request.headers.get("content-type", "").split(";")[0].strip().lower() != A2A_JSON and request.method == "POST":
-        return proto_error(415, "UNSUPPORTED_MEDIA_TYPE", "Content-Type application/a2a+json is required.")
+    # Authenticate protected resources before validating protocol headers so an
+    # unauthenticated task-list request consistently receives 401.
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer ") or not auth[7:].strip():
         return proto_error(401, "UNAUTHENTICATED", "A valid Bearer token is required.")
     request.state.principal_hash = hashlib.sha256(auth[7:].encode()).hexdigest()
+    if request.headers.get("A2A-Version") != "1.0":
+        return proto_error(400, "UNSUPPORTED_VERSION", "A2A-Version 1.0 is required.")
+    if request.method == "POST" and request.headers.get("content-type", "").split(";")[0].strip().lower() != A2A_JSON:
+        return proto_error(415, "UNSUPPORTED_MEDIA_TYPE", "Content-Type application/a2a+json is required.")
     response = await call_next(request)
     if response.headers.get("content-type", "").startswith("application/json"):
         response.headers["content-type"] = A2A_JSON
@@ -97,13 +99,20 @@ def agent_card(request: Request):
       "name": APP_NAME,
       "description": "Evidence-based invoice action proposals with approval-gated, receipt-bound execution and durable task state.",
       "version": VERSION,
-      "capabilities": {"streaming": False, "pushNotifications": False, "stateTransitionHistory": True},
+      "capabilities": {"streaming": False, "pushNotifications": False, "stateTransitionHistory": True, "extendedAgentCard": False},
       "supportedInterfaces": [{"url": base, "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"}],
+      "securitySchemes": {
+        "bearerAuth": {
+          "httpAuthSecurityScheme": {"scheme": "Bearer", "bearerFormat": "opaque"}
+        }
+      },
+      "securityRequirements": [{"schemes": {"bearerAuth": []}}],
       "defaultInputModes": [BATCH_MT, RESULTS_MT],
       "defaultOutputModes": [PROPOSALS_MT, RECEIPTS_MT],
       "skills": [{"id":"invoice_action_agent","name":"Invoice Action Agent",
-        "description":"Analyze invoice packages, cite decisive evidence, and execute only accepted proposals.",
-        "tags":["invoice","accounts-payable","evidence","idempotency","receipts"]}]
+        "description":"Analyze invoice packages independently, identify the controlling facts, cite exact decisive evidence references, explain the selected action, and execute only accepted proposals with receipt-bound audit records.",
+        "tags":["invoice","accounts-payable","evidence","idempotency","receipts"],
+        "examples":["Analyze an invoice batch and return an evidence-backed action proposal for each package.","Submit accepted or rejected action results and return durable execution receipts."]}]
     })
 
 def extract_parts(message):
