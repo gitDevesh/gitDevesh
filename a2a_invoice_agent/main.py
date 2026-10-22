@@ -250,7 +250,7 @@ def choose_fallback_action(package):
         for paragraph in scan:
             # Evaluate negation sentence-by-sentence. A denial elsewhere in a
             # multi-sentence paragraph must not erase a separate affirmative fact.
-            for sentence in re.split(r"(?<=[.!?])\\s+", paragraph):
+            for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
                 sentence = sentence.strip()
                 if not sentence:
                     continue
