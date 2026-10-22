@@ -69,10 +69,10 @@ def proto_error(status, code, message):
 
 @app.middleware("http")
 async def a2a_headers(request: Request, call_next):
-    if request.url.path == "/.well-known/agent-card.json" or request.url.path == "/health":
+    # Only the Agent Card is public; every other route, including health
+    # and preflight requests, is protected by the exact Bearer-token contract.
+    if request.url.path == "/.well-known/agent-card.json":
         return await call_next(request)
-    if request.method == "OPTIONS":
-        return JSONResponse(status_code=204, content={})
     # Authenticate protected resources before validating protocol headers so an
     # unauthenticated task-list request consistently receives 401.
     auth = request.headers.get("authorization", "")
