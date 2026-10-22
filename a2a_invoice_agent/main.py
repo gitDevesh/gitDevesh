@@ -152,12 +152,64 @@ def flatten_text(obj):
     walk(obj)
     return "\n".join(out)
 
-def evidence_refs(package):
-    # Prefer explicit bracketed references in the decisive document text, never invent refs.
+def evidence_refs(package, action=None):
+    # Preserve exact bracketed references; when action is known, prefer references
+    # occurring in the same evidence text as the controlling signal.
     text = flatten_text(package)
     refs = re.findall(r'\[([^\[\]]{1,100})\]', text)
     refs = list(dict.fromkeys("[" + r.strip() + "]" for r in refs if r.strip()))
+    if action and refs:
+        lines = [line for line in text.splitlines() if "[" in line and "]" in line]
+        keywords = {
+          "reject_duplicate": ("already paid", "previously paid", "payment settled", "same invoice", "duplicate"),
+          "request_approval": ("approval required", "requires approval", "delegated authority", "approval limit", "approval threshold"),
+          "hold_invoice": ("verification pending", "awaiting verification", "not yet verified", "pending confirmation", "delivery confirmation"),
+          "open_exception": ("conflict", "discrepancy", "mismatch", "inconsistent", "contradict"),
+          "settle_invoice": ("reconciled", "matched", "within authority", "approved for payment", "goods received"),
+        }.get(action, ())
+        ranked = []
+        for line in lines:
+            low = line.lower()
+            if any(k in low for k in keywords):
+                ranked.extend("[" + r.strip() + "]" for r in re.findall(r'\[([^\[\]]{1,100})\]', line) if r.strip())
+        if ranked:
+            refs = list(dict.fromkeys(ranked)) + [r for r in refs if r not in ranked]
     return refs
+
+def choose_fallback_action(package):
+    # Classify by evidence-bearing sentences, not by isolated words anywhere
+    # in a package (which may include archive examples, negations, and decoys).
+    text = flatten_text(package)
+    sentences = re.split(r'(?<=[.!?])\s+|\n+', text)
+    def hits(patterns):
+        return [s for s in sentences if any(re.search(p, s, re.I) for p in patterns)]
+    conflicts = hits([r'\bmaterial conflict\b', r'\bconflicting records\b', r'\brecords conflict\b',
+                      r'\bdiscrepancy\b', r'\bmismatch\b', r'\binconsistent (?:amount|vendor|invoice|records)\b'])
+    if conflicts:
+        return "open_exception", conflicts[0]
+    duplicate = hits([r'\bsame (?:commercial )?invoice\b.{0,100}\b(?:already paid|paid previously|payment settled)\b',
+                      r'\b(?:already paid|previously paid|payment settled)\b.{0,100}\bsame (?:commercial )?invoice\b',
+                      r'\bduplicate invoice\b.{0,100}\bpaid\b'])
+    # A bare mention of "duplicate" or an unrelated paid invoice is not enough.
+    if duplicate:
+        return "reject_duplicate", duplicate[0]
+    pending = hits([r'\b(?:awaiting|pending|not yet completed|not yet verified)\b.{0,80}\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection|reconciliation)\b',
+                    r'\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection)\b.{0,80}\b(?:pending|awaiting|not yet verified)\b'])
+    if pending:
+        return "hold_invoice", pending[0]
+    approval = hits([r'\b(?:requires?|needs?) approval\b', r'\bapproval required\b',
+                     r'\bexceeds? (?:the )?(?:delegated )?(?:authority|limit|threshold)\b',
+                     r'\babove (?:the )?delegated authority\b', r'\bapproval limit exceeded\b'])
+    if approval:
+        return "request_approval", approval[0]
+    # Settlement requires affirmative evidence of reconciliation and authority;
+    # absence of a warning is never sufficient.
+    settled = hits([r'\b(?:fully )?reconciled\b', r'\bmatched (?:to|against) (?:the )?(?:purchase order|po|goods receipt)\b'])
+    authorized = hits([r'\bwithin (?:the )?(?:agent.s )?(?:delegated )?authority\b',
+                       r'\bwithin autonomous authority\b', r'\bbelow (?:the )?approval threshold\b'])
+    if settled and authorized:
+        return "settle_invoice", settled[0] + " " + authorized[0]
+    return "hold_invoice", "The available evidence does not affirmatively establish reconciliation and delegated authority; payment remains on hold pending verification."
 
 def ai_decide_batch(batch):
     packages = batch.get("packages") or []
@@ -209,21 +261,19 @@ def ai_decide_batch(batch):
             except Exception: amount=0
         try: amount=int(amount)
         except Exception: amount=0
-        txt=flatten_text(pkg).lower()
-        refs=evidence_refs(pkg)
-        if len(refs) != 3:
-            refs = refs[:3]
-        if any(w in txt for w in ["material conflict","conflicting records","records conflict","mismatch in","discrepancy"]):
-            action="open_exception"; why="The package indicates a material records conflict, so the invoice requires an exception workflow."
-        elif any(w in txt for w in ["already paid","previously paid","payment settled","duplicate invoice","paid invoice"]):
-            action="reject_duplicate"; why="The records indicate this same commercial invoice was already paid; it must not be paid again."
-        elif any(w in txt for w in ["awaiting verification","verification pending","not yet verified","missing delivery confirmation","pending confirmation"]):
-            action="hold_invoice"; why="A required verification remains pending, so payment must be held until it is completed."
-        elif any(w in txt for w in ["requires approval","approval required","exceeds delegated","above authority","approval limit exceeded"]):
-            action="request_approval"; why="The invoice appears commercially valid but requires approval beyond the agent's delegated authority."
-        else:
-            action="hold_invoice"; why="The available evidence is insufficient to safely establish that the invoice is reconciled and within autonomous authority, so payment is held pending verification."
-        rationale=(f"{action}: {why} Supporting evidence references: {', '.join(refs)}. The action is based on the package's available records; no payment is executed at proposal time.")
+        action, controlling_text = choose_fallback_action(pkg)
+        refs=evidence_refs(pkg, action)
+        # Never manufacture references. Prefer exactly three distinct references
+        # present in the package; validation below rejects packages without them.
+        refs=refs[:3]
+        why = {
+          "open_exception": "The controlling evidence indicates a material conflict that requires an exception workflow.",
+          "reject_duplicate": "The controlling evidence indicates that this same commercial invoice was already paid; a different invoice is not a duplicate.",
+          "hold_invoice": "The controlling evidence does not establish all conditions for safe payment, or a required verification remains pending.",
+          "request_approval": "The controlling evidence indicates that approval beyond delegated authority is required.",
+          "settle_invoice": "The controlling evidence supports reconciliation and confirms that the invoice is within delegated authority.",
+        }[action]
+        rationale=(f"{action}: {why} Controlling evidence: {controlling_text}. Supporting evidence references: {', '.join(refs)}. No payment is executed at proposal time.")
         rationale=rationale[:1500]
         proposals.append({"packageId":pid,"action":action,"facts":{"vendorName":vendor,"invoiceNumber":invoice,"amountMinor":amount,"currency":currency},
           "evidenceRefs":refs,"rationale":rationale})
@@ -256,11 +306,20 @@ def validate_proposals(batch, raw):
           "amountMinor":int(facts.get("amountMinor") or 0),
           "currency":str(facts.get("currency") or find_value(pkg,["currency"],"INR"))
         }
-        refs=pr.get("evidenceRefs") if isinstance(pr.get("evidenceRefs"),list) else evidence_refs(pkg)
-        refs=[str(x) for x in refs[:3]]
+        refs=pr.get("evidenceRefs") if isinstance(pr.get("evidenceRefs"),list) else evidence_refs(pkg, action)
+        refs=[str(x) for x in refs]
+        # Evidence must be real, unique, bracketed references from this package.
+        actual=set(evidence_refs(pkg))
+        refs=list(dict.fromkeys(refs))
+        if len(refs)!=3 or any(not re.fullmatch(r'\[[^\[\]]{1,100}\]', x) for x in refs) or any(x not in actual for x in refs):
+            refs=evidence_refs(pkg, action)[:3]
+        if len(refs)!=3 or len(set(refs))!=3 or any(x not in actual for x in refs):
+            raise ValueError("Each proposal must cite exactly three genuine package evidence references.")
         rationale=str(pr.get("rationale") or f"{action}: evidence requires conservative handling. Supporting references: {', '.join(refs)}.")
         if len(rationale)<60: rationale=(rationale+" This decision is subject to the evidence and policy contained in the invoice package.")
         rationale=rationale[:1500]
+        if sum(1 for ref in refs if ref in rationale)<2:
+            rationale=(rationale+f" Supporting evidence cited: {refs[0]} and {refs[1]}.")[:1500]
         out.append({"packageId":package_id,"actionId":action_id,"action":action,"facts":facts,"evidenceRefs":refs,"rationale":rationale})
     return out
 
