@@ -181,7 +181,7 @@ def ai_decide_batch(batch):
               "settle_invoice only when the invoice is valid, reconciled, and within autonomous authority. Follow explicit controlling policy/case facts over generic assumptions. "
               "Extract facts from controlling invoice records; amountMinor is in minor currency units (e.g. INR rupees times 100). Never invent facts or evidence. "
               "Rationale must be 60-1500 characters, name the selected action, explain why the controlling evidence supports it, and cite at least two of the three evidenceRefs. "
-              "Do not include markdown or extra keys.\\nBATCH:\\n" + canonical(batch)
+              "Do not include markdown or extra keys.\nBATCH:\n" + canonical(batch)
             )
             body = {"model":model,"temperature":0,"response_format":{"type":"json_object"},
                     "messages":[{"role":"system","content":"Return accurate structured invoice decisions only."},{"role":"user","content":prompt}]}
