@@ -229,8 +229,9 @@ def validate_proposals(batch, raw):
         ids.add(package_id)
         action=pr.get("action")
         if action not in ACTIONS: action="hold_invoice"
-        action_id=str(pr.get("actionId") or uuid.uuid4().hex)
-        if len(action_id)<12 or action_id in actions: action_id=uuid.uuid4().hex
+        # Generate a fresh durable ID per task; cached semantic decisions must not reuse action identities.
+        action_id=uuid.uuid4().hex
+        if action_id in actions: action_id=uuid.uuid4().hex
         actions.add(action_id)
         facts=pr.get("facts") if isinstance(pr.get("facts"),dict) else {}
         facts={
