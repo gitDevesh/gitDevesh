@@ -106,7 +106,7 @@ def agent_card(request: Request):
           "httpAuthSecurityScheme": {"scheme": "Bearer", "bearerFormat": "opaque"}
         }
       },
-      "securityRequirements": [{"schemes": {"bearerAuth": {"list": []}}}],
+      "securityRequirements": [{"schemes": {"bearerAuth": []}}],
       "defaultInputModes": [BATCH_MT, RESULTS_MT],
       "defaultOutputModes": [PROPOSALS_MT, RECEIPTS_MT],
       "skills": [{"id":"invoice_action_agent","name":"Invoice Action Agent",
