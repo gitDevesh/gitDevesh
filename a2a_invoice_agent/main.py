@@ -152,61 +152,101 @@ def flatten_text(obj):
     walk(obj)
     return "\n".join(out)
 
+def decision_lines(package):
+    """Return evidence text with document provenance, excluding obvious non-controlling material."""
+    lines = []
+    excluded = re.compile(r"\b(?:archive|archived|training.?decoy|decoy|old example|historical example|cover sheet|superseded|obsolete)\b", re.I)
+    def walk(value, path=""):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                walk(child, f"{path} {key}".strip())
+        elif isinstance(value, list):
+            for i, child in enumerate(value):
+                walk(child, f"{path} item{i}")
+        elif isinstance(value, str):
+            # Preserve sentence-level evidence while retaining its source field.
+            for sentence in re.split(r"(?<=[.!?])\s+|\n+", value):
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                if excluded.search(path):
+                    continue
+                # Drop clearly labelled historical/decoy sentences, not a whole
+                # paragraph merely because it mentions an unrelated invoice.
+                if excluded.search(sentence) and re.search(r"\b(?:example|archive|decoy|superseded|obsolete)\b", sentence, re.I):
+                    continue
+                lines.append(f"{path}: {sentence}")
+        elif value is not None:
+            lines.append(f"{path}: {value}")
+    walk(package)
+    return lines
+
 def evidence_refs(package, action=None):
-    # Preserve exact bracketed references; when action is known, prefer references
-    # occurring in the same evidence text as the controlling signal.
-    text = flatten_text(package)
-    refs = re.findall(r'\[([^\[\]]{1,100})\]', text)
-    refs = list(dict.fromkeys("[" + r.strip() + "]" for r in refs if r.strip()))
+    # Prefer references in current evidence-bearing paragraphs and rank those
+    # whose own sentence supports the proposed action. Preserve reference text.
+    lines = decision_lines(package)
+    if not lines:
+        lines = flatten_text(package).splitlines()
+    all_refs = []
+    for line in lines:
+        all_refs.extend("[" + r.strip() + "]" for r in re.findall(r"\[([^\[\]]{1,100})\]", line) if r.strip())
+    refs = list(dict.fromkeys(all_refs))
     if action and refs:
-        lines = [line for line in text.splitlines() if "[" in line and "]" in line]
         keywords = {
-          "reject_duplicate": ("already paid", "previously paid", "payment settled", "same invoice", "duplicate"),
-          "request_approval": ("approval required", "requires approval", "delegated authority", "approval limit", "approval threshold"),
-          "hold_invoice": ("verification pending", "awaiting verification", "not yet verified", "pending confirmation", "delivery confirmation"),
-          "open_exception": ("conflict", "discrepancy", "mismatch", "inconsistent", "contradict"),
-          "settle_invoice": ("reconciled", "matched", "within authority", "approved for payment", "goods received"),
+          "reject_duplicate": (r"\balready paid\b", r"\bpreviously paid\b", r"\bpayment settled\b", r"\bsame invoice\b", r"\bduplicate invoice\b"),
+          "request_approval": (r"\bapproval required\b", r"\brequires? approval\b", r"\bdelegated authority\b", r"\bapproval limit\b", r"\bapproval threshold\b"),
+          "hold_invoice": (r"\bverification pending\b", r"\bawaiting verification\b", r"\bnot yet verified\b", r"\bpending confirmation\b", r"\bdelivery confirmation\b"),
+          "open_exception": (r"\bconflict(?:ing)? records?\b", r"\bdiscrepancy\b", r"\bmismatch\b", r"\binconsistent\b", r"\bcontradict"),
+          "settle_invoice": (r"\breconciled\b", r"\bmatched\b", r"\bwithin authority\b", r"\bapproved for payment\b", r"\bgoods received\b"),
         }.get(action, ())
         ranked = []
         for line in lines:
-            low = line.lower()
-            if any(k in low for k in keywords):
-                ranked.extend("[" + r.strip() + "]" for r in re.findall(r'\[([^\[\]]{1,100})\]', line) if r.strip())
+            if any(re.search(k, line, re.I) for k in keywords):
+                ranked.extend("[" + r.strip() + "]" for r in re.findall(r"\[([^\[\]]{1,100})\]", line) if r.strip())
         if ranked:
-            refs = list(dict.fromkeys(ranked)) + [r for r in refs if r not in ranked]
+            ranked = list(dict.fromkeys(ranked))
+            refs = ranked + [r for r in refs if r not in ranked]
     return refs
 
 def choose_fallback_action(package):
-    # Classify by evidence-bearing sentences, not by isolated words anywhere
-    # in a package (which may include archive examples, negations, and decoys).
-    text = flatten_text(package)
-    sentences = re.split(r'(?<=[.!?])\s+|\n+', text)
+    # Use evidence sentences, excluding explicit archives/decoys and requiring
+    # affirmative signals. If no safe positive case is established, hold.
+    lines = decision_lines(package)
+    if not lines:
+        lines = flatten_text(package).splitlines()
+    sentences = [line for line in lines if "[" in line and "]" in line] or lines
+    def active_hit(sentence, patterns):
+        low = sentence.lower()
+        # Negated statements do not establish a business action.
+        if re.search(r"\b(?:not|never|no evidence of|not yet|isn't|is not|wasn't|was not|cannot|do not)\b.{0,70}\b(?:paid|duplicate|conflict|discrepancy|mismatch|pending|approval|reconciled|matched|authorized)\b", low):
+            return False
+        return any(re.search(pattern, low, re.I) for pattern in patterns)
     def hits(patterns):
-        return [s for s in sentences if any(re.search(p, s, re.I) for p in patterns)]
-    conflicts = hits([r'\bmaterial conflict\b', r'\bconflicting records\b', r'\brecords conflict\b',
-                      r'\bdiscrepancy\b', r'\bmismatch\b', r'\binconsistent (?:amount|vendor|invoice|records)\b'])
+        return [s for s in sentences if active_hit(s, patterns)]
+    conflicts = hits([r"\bmaterial conflict\b", r"\bconflicting records\b", r"\brecords conflict\b",
+                      r"\bdiscrepancy\b", r"\bmismatch\b", r"\binconsistent (?:amount|vendor|invoice|records)\b",
+                      r"\b(?:amount|vendor|invoice number)\s+(?:does not match|differs from|conflicts with)\b"])
     if conflicts:
         return "open_exception", conflicts[0]
-    duplicate = hits([r'\bsame (?:commercial )?invoice\b.{0,100}\b(?:already paid|paid previously|payment settled)\b',
-                      r'\b(?:already paid|previously paid|payment settled)\b.{0,100}\bsame (?:commercial )?invoice\b',
-                      r'\bduplicate invoice\b.{0,100}\bpaid\b'])
-    # A bare mention of "duplicate" or an unrelated paid invoice is not enough.
+    duplicate = hits([r"\bsame (?:commercial )?invoice\b.{0,100}\b(?:already paid|paid previously|previously paid|payment settled)\b",
+                      r"\b(?:already paid|previously paid|payment settled)\b.{0,100}\bsame (?:commercial )?invoice\b",
+                      r"\bduplicate invoice\b.{0,100}\bpaid\b"])
     if duplicate:
         return "reject_duplicate", duplicate[0]
-    pending = hits([r'\b(?:awaiting|pending|not yet completed|not yet verified)\b.{0,80}\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection|reconciliation)\b',
-                    r'\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection)\b.{0,80}\b(?:pending|awaiting|not yet verified)\b'])
+    pending = hits([r"\b(?:awaiting|pending|not yet completed|not yet verified)\b.{0,80}\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection|reconciliation)\b",
+                    r"\b(?:verification|confirm(?:ation)?|delivery|receipt|inspection)\b.{0,80}\b(?:pending|awaiting|not yet verified)\b"])
     if pending:
         return "hold_invoice", pending[0]
-    approval = hits([r'\b(?:requires?|needs?) approval\b', r'\bapproval required\b',
-                     r'\bexceeds? (?:the )?(?:delegated )?(?:authority|limit|threshold)\b',
-                     r'\babove (?:the )?delegated authority\b', r'\bapproval limit exceeded\b'])
+    approval = hits([r"\b(?:requires?|needs?) approval\b", r"\bapproval required\b",
+                     r"\bexceeds? (?:the )?(?:delegated )?(?:authority|limit|threshold)\b",
+                     r"\babove (?:the )?delegated authority\b", r"\bapproval limit exceeded\b",
+                     r"\bamount\s+(?:is\s+)?over\s+(?:the\s+)?approval threshold\b"])
     if approval:
         return "request_approval", approval[0]
-    # Settlement requires affirmative evidence of reconciliation and authority;
-    # absence of a warning is never sufficient.
-    settled = hits([r'\b(?:fully )?reconciled\b', r'\bmatched (?:to|against) (?:the )?(?:purchase order|po|goods receipt)\b'])
-    authorized = hits([r'\bwithin (?:the )?(?:agent.s )?(?:delegated )?authority\b',
-                       r'\bwithin autonomous authority\b', r'\bbelow (?:the )?approval threshold\b'])
+    settled = hits([r"\b(?:fully )?reconciled\b", r"\bmatched (?:to|against) (?:the )?(?:purchase order|po|goods receipt)\b"])
+    authorized = hits([r"\bwithin (?:the )?(?:agent.s )?(?:delegated )?authority\b",
+                       r"\bwithin autonomous authority\b", r"\bbelow (?:the )?approval threshold\b",
+                       r"\bwithin the approval limit\b"])
     if settled and authorized:
         return "settle_invoice", settled[0] + " " + authorized[0]
     return "hold_invoice", "The available evidence does not affirmatively establish reconciliation and delegated authority; payment remains on hold pending verification."
