@@ -99,14 +99,14 @@ def agent_card(request: Request):
       "name": APP_NAME,
       "description": "Evidence-based invoice action proposals with approval-gated, receipt-bound execution and durable task state.",
       "version": VERSION,
-      "capabilities": {"streaming": False, "pushNotifications": False, "stateTransitionHistory": True, "extendedAgentCard": False},
+      "capabilities": {"streaming": False, "pushNotifications": False, "extendedAgentCard": False},
       "supportedInterfaces": [{"url": base, "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"}],
       "securitySchemes": {
         "bearerAuth": {
           "httpAuthSecurityScheme": {"scheme": "Bearer", "bearerFormat": "opaque"}
         }
       },
-      "securityRequirements": [{"schemes": {"bearerAuth": []}}],
+      "securityRequirements": [{"schemes": {"bearerAuth": {"list": []}}}],
       "defaultInputModes": [BATCH_MT, RESULTS_MT],
       "defaultOutputModes": [PROPOSALS_MT, RECEIPTS_MT],
       "skills": [{"id":"invoice_action_agent","name":"Invoice Action Agent",
@@ -168,13 +168,20 @@ def ai_decide_batch(batch):
         try:
             import urllib.request
             prompt = (
-              "You are an invoice decision agent. Analyze every package independently. Return ONLY JSON "
-              "with a proposals array, one per package, keys packageId, action, facts(vendorName,invoiceNumber,amountMinor,currency), "
-              "evidenceRefs, rationale. Actions must be settle_invoice, request_approval, hold_invoice, reject_duplicate, open_exception. "
-              "Use exactly the three decisive bracketed references from the paragraph determining the action; don't use cover sheets, archive examples, or decoys. "
-              "Never settle unless valid, reconciled, and within authority. Same commercial invoice already paid => reject_duplicate; different invoice is not duplicate. "
-              "Material conflicts => open_exception; required verification pending => hold_invoice; valid but above authority => request_approval. "
-              "Rationale 60-1500 chars and cite at least two refs. Preserve facts and do not invent evidence.\nBATCH:\n" + canonical(batch)
+              "You are an expert accounts-payable decision agent. Read the full supplied package documents, not just cover sheets. "
+              "Decide each package independently from its own controlling facts and supplied policyRevision. Do not apply a blanket action. "
+              "Return ONLY a JSON object with a proposals array containing exactly one item per input package, in input order. "
+              "Each item has packageId, action, facts {vendorName,invoiceNumber,amountMinor,currency}, evidenceRefs, rationale. "
+              "Allowed actions: settle_invoice, request_approval, hold_invoice, reject_duplicate, open_exception. "
+              "Select exactly the three decisive bracketed evidence references from the specific paragraph that controls the decision. "
+              "Do not cite cover-sheet references, archive examples, training decoys, or irrelevant references. Preserve each reference exactly as written. "
+              "Read sentences in context: distinguish assertions from negations, hypothetical examples, old/archive records, and explicitly corrected or superseded facts. "
+              "A different invoice is not a duplicate. Reject as duplicate only when evidence establishes that the same commercial invoice was already paid. "
+              "Use open_exception for material unresolved conflicts in records; hold_invoice when a required verification is still pending; request_approval when otherwise valid but above delegated authority; "
+              "settle_invoice only when the invoice is valid, reconciled, and within autonomous authority. Follow explicit controlling policy/case facts over generic assumptions. "
+              "Extract facts from controlling invoice records; amountMinor is in minor currency units (e.g. INR rupees times 100). Never invent facts or evidence. "
+              "Rationale must be 60-1500 characters, name the selected action, explain why the controlling evidence supports it, and cite at least two of the three evidenceRefs. "
+              "Do not include markdown or extra keys.\\nBATCH:\\n" + canonical(batch)
             )
             body = {"model":model,"temperature":0,"response_format":{"type":"json_object"},
                     "messages":[{"role":"system","content":"Return accurate structured invoice decisions only."},{"role":"user","content":prompt}]}
@@ -287,17 +294,24 @@ async def message_send(request: Request):
         if not batch_id or not isinstance(packages,list) or not packages:
             return proto_error(400,"INVALID_ARGUMENT","Batch must include batchId and nonempty packages.")
         try:
-          raw=[]
-          for pkg in packages:
+          raw=[None] * len(packages)
+          missing=[]
+          missing_indices=[]
+          for i,pkg in enumerate(packages):
             ph=digest(pkg)
             with db() as c: cached=c.execute("SELECT proposal_json FROM decisions WHERE package_hash=?",(ph,)).fetchone()
-            if cached: raw.append(json.loads(cached["proposal_json"]))
-            else: raw.append(None)
-          if any(x is None for x in raw):
-            # One batched model call; replace all placeholders in original order.
-            proposed=ai_decide_batch(batch)
-            if len(proposed)!=len(packages): raise ValueError("AI returned incorrect proposal count")
-            raw=proposed
+            if cached:
+              raw[i]=json.loads(cached["proposal_json"])
+            else:
+              missing.append(pkg)
+              missing_indices.append(i)
+          if missing:
+            # Only uncached packages are sent to the model; fresh audit cases are still analyzed.
+            partial_batch={**batch,"packages":missing}
+            proposed=ai_decide_batch(partial_batch)
+            if len(proposed)!=len(missing): raise ValueError("AI returned incorrect proposal count")
+            for i,proposal in zip(missing_indices,proposed):
+              raw[i]=proposal
           proposals=validate_proposals(batch,raw)
           for pkg,prop in zip(packages,proposals):
             with db() as c:
