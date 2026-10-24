@@ -314,7 +314,7 @@ def choose_fallback_action(package):
       r"\bamount.{0,60}\b(?:above|over|exceeds?)\b.{0,40}\b(?:limit|threshold|authority)\b",
       r"\bapproval (?:must|has to) be obtained\b"
     ]
-    approvals = matching(approval_patterns, ("approval required", "requires approval", "needs approval"))
+    approvals = matching(approval_patterns, ("approval", "require approval", "needs approval"))
     if approvals:
         return "request_approval", approvals[0]
 
@@ -343,13 +343,13 @@ def choose_fallback_action(package):
     settled = matching([
       r"\b(?:fully )?reconciled\b", r"\bmatched (?:to|against) (?:the )?(?:purchase order|po|goods receipt|delivery record)\b",
       r"\bthree[- ]way match (?:is )?(?:complete|confirmed|successful)\b"
-    ], ("not reconciled", "not matched"))
+    ], (r"(?:reconciled|matched|three[- ]way match)",))
     authorized = matching([
       r"\bwithin (?:the )?(?:agent.s )?(?:delegated )?authority\b",
       r"\bwithin autonomous authority\b", r"\bbelow (?:the )?approval threshold\b",
       r"\bwithin the approval limit\b", r"\bno approval required\b",
       r"\bamount is within (?:the )?(?:delegated )?(?:limit|threshold)\b"
-    ], ("not within authority", "not authorized"))
+    ], (r"(?:within (?:the )?(?:agent.s )?(?:delegated )?authority|within autonomous authority|below (?:the )?approval threshold|within the approval limit|within (?:the )?(?:delegated )?(?:limit|threshold)|authorized)",))
     if settled and authorized:
         return "settle_invoice", settled[0] + " " + authorized[0]
 
