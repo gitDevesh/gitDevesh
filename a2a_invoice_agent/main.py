@@ -63,6 +63,17 @@ def task_store(task, principal_hash, batch_id=None):
           (task["id"], principal_hash, task["contextId"], task["status"]["state"], batch_id,
            canonical(task), now()))
 
+def task_store_terminal(task, principal_hash, batch_id, expected_states):
+    """Atomically claim a nonterminal task transition; exactly one racing writer wins."""
+    placeholders = ",".join("?" for _ in expected_states)
+    with db() as c:
+        result = c.execute(
+            f"""UPDATE tasks SET state=?, batch_id=?, task_json=?, updated_at=?
+                WHERE id=? AND principal_hash=? AND state IN ({placeholders})""",
+            (task["status"]["state"], batch_id, canonical(task), now(), task["id"],
+             principal_hash, *expected_states))
+        return result.rowcount == 1
+
 def proto_error(status, code, message):
     return JSONResponse(status_code=status, media_type=A2A_JSON,
         content={"error":{"code":code,"message":message}})
@@ -532,8 +543,9 @@ async def message_send(request: Request):
         if not task: return proto_error(404,"TASK_NOT_FOUND","Task not found.")
         if task.get("contextId")!=context: return proto_error(409,"TASK_CONTEXT_MISMATCH","Task context does not match.")
         if task["status"]["state"] in ("TASK_STATE_COMPLETED","TASK_STATE_CANCELED","TASK_STATE_FAILED"):
-            # Terminal replay is immutable and idempotent.
-            return JSONResponse({"task":task},media_type=A2A_JSON)
+            # Same-message replays are returned by the idempotency table above.
+            # A new continuation against a terminal Task must lose with 409.
+            return proto_error(409,"TASK_TERMINAL","Terminal task cannot be changed.")
         if task["status"]["state"]!="TASK_STATE_INPUT_REQUIRED":
             return proto_error(409,"TASK_STATE_CONFLICT","Task is not awaiting results.")
         arts=task.get("artifacts",[])
@@ -558,10 +570,13 @@ async def message_send(request: Request):
                   "facts":p["facts"],"evidenceRefs":p["evidenceRefs"]})
             elif result.get("outcome")!="REJECTED":
                 return proto_error(400,"INVALID_OUTCOME","Outcome must be ACCEPTED or REJECTED.")
+        if seen != set(proposals):
+            return proto_error(409,"INCOMPLETE_RESULTS","A result is required for every proposed package.")
         task["history"].append(message)
         task["artifacts"].append({"parts":[{"mediaType":RECEIPTS_MT,"data":{"batchId":data["batchId"],"executions":executions}}]})
         task["status"]={"state":"TASK_STATE_COMPLETED","timestamp":now()}
-        task_store(task,principal,data["batchId"])
+        if not task_store_terminal(task,principal,data["batchId"],("TASK_STATE_INPUT_REQUIRED",)):
+            return proto_error(409,"TASK_TERMINAL","Another terminal operation already won.")
       else:
         return proto_error(400,"INVALID_ARGUMENT","Message must contain an invoice batch or action results part.")
       with db() as c:
@@ -590,5 +605,7 @@ def cancel_task(task_id: str, request: Request):
       if task["status"]["state"] in ("TASK_STATE_COMPLETED","TASK_STATE_CANCELED","TASK_STATE_FAILED"):
           return proto_error(409,"TASK_TERMINAL","Terminal task cannot be changed.")
       task["status"]={"state":"TASK_STATE_CANCELED","timestamp":now()}
-      task_store(task,principal,task.get("artifacts",[{}])[0].get("parts",[{}])[0].get("data",{}).get("batchId"))
+      batch_id=task.get("artifacts",[{}])[0].get("parts",[{}])[0].get("data",{}).get("batchId")
+      if not task_store_terminal(task,principal,batch_id,("TASK_STATE_SUBMITTED","TASK_STATE_WORKING","TASK_STATE_INPUT_REQUIRED")):
+          return proto_error(409,"TASK_TERMINAL","Another terminal operation already won.")
     return JSONResponse(task,media_type=A2A_JSON)
