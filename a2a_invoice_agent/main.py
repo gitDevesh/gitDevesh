@@ -414,7 +414,8 @@ def ai_decide_batch(batch):
         try: amount=int(amount)
         except Exception: amount=0
         action, controlling_text = choose_fallback_action(pkg)
-        refs=evidence_refs(pkg, action)
+        # Bind citations to the exact paragraph used to make the fallback decision.
+        refs=evidence_refs(pkg, action, controlling_text)
         # Never manufacture references. Prefer exactly three distinct references
         # present in the package; validation below rejects packages without them.
         refs=refs[:3]
@@ -465,9 +466,18 @@ def validate_proposals(batch, raw):
         refs=pr.get("evidenceRefs") if isinstance(pr.get("evidenceRefs"),list) else evidence_refs(pkg, action)
         refs=[str(x) for x in refs]
         # Evidence must be real, unique, bracketed references from this package.
-        actual=set(evidence_refs(pkg))
+        actual=set(evidence_refs(pkg, action))
         refs=list(dict.fromkeys(refs))
-        if len(refs)!=3 or any(not re.fullmatch(r'\[[^\[\]]{1,100}\]', x) for x in refs) or any(x not in actual for x in refs):
+        refs_are_together = any(
+            len(refs) == 3 and all(ref in {
+                "[" + value.strip() + "]"
+                for value in re.findall(r"\[([^\[\]]{1,100})\]", paragraph)
+                if value.strip()
+            } for ref in refs)
+            for paragraph in decision_paragraphs(pkg)
+        )
+        if (len(refs)!=3 or any(not re.fullmatch(r'\[[^\[\]]{1,100}\]', x) for x in refs)
+                or any(x not in actual for x in refs) or not refs_are_together):
             refs=evidence_refs(pkg, action)[:3]
         if len(refs)!=3 or len(set(refs))!=3 or any(x not in actual for x in refs):
             raise ValueError("Each proposal must cite exactly three genuine package evidence references.")
