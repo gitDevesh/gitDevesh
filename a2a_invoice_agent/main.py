@@ -40,6 +40,12 @@ def init_db():
 
 init_db()
 
+_ai_env_keys = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "AI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY")
+if any(os.getenv(key) for key in _ai_env_keys):
+    logging.getLogger("invoice-agent").info("Hosted AI provider credentials are configured.")
+else:
+    logging.getLogger("invoice-agent").warning("No hosted AI provider credentials are configured; deterministic fallback will be used.")
+
 @contextmanager
 def db():
     c = sqlite3.connect(DB_PATH, timeout=20)
@@ -105,7 +111,8 @@ def health():
 
 @app.get("/.well-known/agent-card.json")
 def agent_card(request: Request):
-    base = str(request.base_url).rstrip("/")
+    # Set A2A_BASE_URL when the grader's submitted base URL differs from the request origin.
+    base = os.getenv("A2A_BASE_URL") or str(request.base_url).rstrip("/")
     return JSONResponse(media_type=A2A_JSON, content={
       "name": APP_NAME,
       "description": "Evidence-based invoice action proposals with approval-gated, receipt-bound execution and durable task state.",
