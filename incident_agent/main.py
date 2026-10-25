@@ -406,60 +406,59 @@ def model_prompt(agent_name: str, incident: dict[str, Any], catalog: list[dict[s
     )
 
 
-def gemini_schema_subset(schema: Any) -> Any:
-    """Keep tool schemas to keywords supported by Gemini JSON output."""
-    supported = {
-        "type", "title", "description", "enum", "items", "minItems", "maxItems",
-        "minimum", "maximum", "anyOf", "oneOf", "properties", "additionalProperties",
-        "required", "format",
-    }
-    if isinstance(schema, list):
-        return [gemini_schema_subset(item) for item in schema]
-    if not isinstance(schema, dict):
-        return schema
-    result: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key not in supported:
-            if key == "const":
-                result["enum"] = [value]
+def compact_argument_properties(catalog: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a small union of argument names/types for reliable provider decoding.
+
+    The full input schemas remain in the planning prompt and are enforced after
+    generation. Keeping this output schema shallow avoids provider rejection of
+    large/complex case-specific tool catalogs.
+    """
+    properties: dict[str, Any] = {}
+    conflicts: set[str] = set()
+    for tool in catalog:
+        schema = tool.get("inputSchema") or {}
+        source = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        if not isinstance(source, dict):
             continue
-        if key == "properties" and isinstance(value, dict):
-            result[key] = {name: gemini_schema_subset(child) for name, child in value.items()}
-        elif key in ("items", "anyOf", "oneOf"):
-            result[key] = gemini_schema_subset(value)
-        elif key == "additionalProperties" and isinstance(value, dict):
-            result[key] = gemini_schema_subset(value)
-        else:
-            result[key] = value
-    return result
+        for name, field_schema in source.items():
+            if not isinstance(field_schema, dict):
+                properties.setdefault(name, {})
+                continue
+            field_type = field_schema.get("type")
+            compact = {"type": field_type} if field_type in (
+                "string", "number", "integer", "boolean", "array", "object"
+            ) else {}
+            if field_type == "array":
+                items = field_schema.get("items")
+                if isinstance(items, dict) and items.get("type") in (
+                    "string", "number", "integer", "boolean"
+                ):
+                    compact["items"] = {"type": items["type"]}
+            if name in properties and properties[name] != compact:
+                conflicts.add(name)
+            else:
+                properties[name] = compact
+    for name in conflicts:
+        properties[name] = {}
+    return properties
 
 
-def tool_proposal_schema(
-    names: list[str],
-    catalog_by_name: dict[str, dict[str, Any]],
-    evidence_ids: list[str],
-) -> dict[str, Any]:
-    variants = []
-    for name in names:
-        tool = catalog_by_name[name]
-        arguments_schema = gemini_schema_subset(tool.get("inputSchema") or {"type": "object"})
-        variants.append({
-            "type": "object",
-            "properties": {
-                "toolName": {"type": "string", "enum": [name]},
-                "arguments": arguments_schema,
-                "evidence": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string", "enum": evidence_ids},
-                },
+def proposal_output_schema(names: list[str], argument_properties: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "toolName": {"type": "string", "enum": names},
+            "arguments": {
+                "type": "object",
+                "properties": argument_properties,
             },
-            "required": ["toolName", "arguments", "evidence"],
-            "additionalProperties": False,
-        })
-    if len(variants) == 1:
-        return variants[0]
-    return {"oneOf": variants}
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["toolName", "arguments", "evidence"],
+    }
 
 
 def planner_schema(
@@ -470,7 +469,7 @@ def planner_schema(
     catalog: list[dict[str, Any]],
     maximum_diagnostics: int,
 ) -> dict[str, Any]:
-    catalog_by_name = {tool["name"]: tool for tool in catalog}
+    argument_properties = compact_argument_properties(catalog)
     return {
         "type": "object",
         "properties": {
@@ -479,18 +478,17 @@ def planner_schema(
                 "type": "array",
                 "minItems": 2,
                 "maxItems": 4,
-                "items": {"type": "string", "enum": evidence_ids},
+                "items": {"type": "string"},
             },
             "diagnostics": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": min(3, maximum_diagnostics),
-                "items": tool_proposal_schema(diag_names, catalog_by_name, evidence_ids),
+                "items": proposal_output_schema(diag_names, argument_properties),
             },
-            "effect": tool_proposal_schema(effect_names, catalog_by_name, evidence_ids),
+            "effect": proposal_output_schema(effect_names, argument_properties),
         },
         "required": ["rootCause", "evidence", "diagnostics", "effect"],
-        "additionalProperties": False,
     }
 
 def call_planner(agent_name: str, incident: dict[str, Any], catalog: list[dict[str, Any]], policy: dict[str, Any], roots: list[str], evidence_ids: list[str]) -> dict[str, Any]:
