@@ -397,6 +397,36 @@ def select_evidence(dossier, raw, action, target, payload, fallback):
     return chosen
 
 
+
+def safe_fallback_proposal(dossier, raw):
+    # A malformed model item must not turn a valid 70-item propose request into
+    # HTTP 503 or an unsafe partial action. Fall back to a no-op for that dossier.
+    raw_payload = raw.get("payload") if isinstance(raw, dict) else None
+    raw_payload = raw_payload if isinstance(raw_payload, dict) else {}
+    ref = raw_payload.get("referenceId")
+    if not isinstance(ref, str) or not ref.strip() or len(ref.strip()) > 256:
+        ref = dossier["dossierId"][:256]
+    try:
+        ref = clean_string(ref, "payload.referenceId")
+    except Exception:
+        ref = "case-" + hashlib.sha256(dossier["dossierId"].encode("utf-8")).hexdigest()[:24]
+    line_ids = list(source_line_map(dossier))
+    evidence = raw.get("evidence") if isinstance(raw, dict) else None
+    if not isinstance(evidence, list):
+        evidence = []
+    evidence = [x for x in evidence if isinstance(x, str) and x in line_ids]
+    if not evidence and line_ids:
+        evidence = [line_ids[0]]
+    return {
+        "dossierId": dossier["dossierId"],
+        "callId": stable_call_id(dossier["dossierId"], dossier_fingerprint(dossier)),
+        "action": "no_action",
+        "target": None,
+        "payload": {"reasonCode": "INFORMATIONAL", "referenceId": ref},
+        "evidence": evidence,
+    }
+
+
 def normalize_proposal(dossier, raw):
     if not isinstance(raw, dict) or raw.get("dossierId") != dossier["dossierId"]:
         raise ValueError("AI proposal dossierId does not match input")
@@ -614,7 +644,14 @@ async def handle_propose(body):
             try:
                 raw = call_model(missing)
                 for i, dossier, model_proposal in zip(missing_idx, missing, raw):
-                    proposals[i] = normalize_proposal(dossier, model_proposal)
+                    try:
+                        proposals[i] = normalize_proposal(dossier, model_proposal)
+                    except Exception as exc:
+                        _log.warning(
+                            "invalid model proposal for dossier %s; using safe no-op: %s: %s",
+                            dossier["dossierId"], type(exc).__name__, str(exc)[:120],
+                        )
+                        proposals[i] = safe_fallback_proposal(dossier, model_proposal)
             except Exception as exc:
                 _log.warning("proposal analysis failed: %s: %s", type(exc).__name__, str(exc)[:160])
                 return err(503, "AI proposal analysis is temporarily unavailable; retry the same request")
