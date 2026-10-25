@@ -143,15 +143,20 @@ def validate_dossiers(dossiers):
         seen_dossiers.add(did)
         if dossier.get("partition") not in ("stable_core", "fresh_audit"):
             raise ValueError("partition must be stable_core or fresh_audit")
-        if not isinstance(dossier.get("mailbox"), str) or not isinstance(dossier.get("objective"), str):
-            raise ValueError("dossier mailbox and objective must be strings")
+        if not isinstance(dossier.get("receivedAt"), str) or not dossier["receivedAt"]:
+            raise ValueError("dossier receivedAt is required")
+        if not isinstance(dossier.get("mailbox"), str) or not dossier["mailbox"] or not isinstance(dossier.get("objective"), str) or not dossier["objective"]:
+            raise ValueError("dossier mailbox and objective are required strings")
         sources = dossier.get("sources")
         if not isinstance(sources, list) or not sources:
             raise ValueError("each dossier must contain sources")
         line_ids = set()
         for source in sources:
-            if not isinstance(source, dict) or not isinstance(source.get("lines"), list):
-                raise ValueError("each source must contain a lines array")
+            if not isinstance(source, dict) or not isinstance(source.get("lines"), list) or not source["lines"]:
+                raise ValueError("each source must contain a nonempty lines array")
+            for key in ("sourceId", "kind", "provenance", "title"):
+                if not isinstance(source.get(key), str) or not source[key]:
+                    raise ValueError("source " + key + " is required")
             for line in source["lines"]:
                 if not isinstance(line, dict):
                     raise ValueError("each line must be an object")
@@ -187,6 +192,10 @@ def validate_propose(body):
             raise ValueError("corpus counts must be nonnegative integers")
     validate_verifier(body.get("receiptVerifier"))
     dossiers = validate_dossiers(body.get("dossiers"))
+    if corpus["stableCount"] != sum(d["partition"] == "stable_core" for d in dossiers):
+        raise ValueError("corpus stableCount does not match dossiers")
+    if corpus["freshCount"] != sum(d["partition"] == "fresh_audit" for d in dossiers):
+        raise ValueError("corpus freshCount does not match dossiers")
     return eid, dossiers
 
 
@@ -684,15 +693,15 @@ async def handle_commit(body):
             if current["state"] != "awaiting_receipts":
                 c.rollback()
                 return err(409, "evaluation is not awaiting receipts")
-            c.execute(
+            c.executemany(
                 "INSERT INTO mailroom_receipts(evaluation_id,dossier_id,receipt_id,receipt_json) VALUES(?,?,?,?)",
                 [(eid, did, receipt["receiptId"], canonical(receipt)) for did, (receipt, _) in verified.items()],
             )
-            c.execute(
+            updated = c.execute(
                 "UPDATE mailroom_evaluations SET state='completed',commit_hash=?,commit_response=? WHERE evaluation_id=? AND state='awaiting_receipts'",
                 (commit_hash, canonical(response), eid),
             )
-            if c.total_changes < 1:
+            if updated.rowcount != 1:
                 c.rollback()
                 return err(409, "another terminal commit already won")
             c.commit()
@@ -719,6 +728,10 @@ async def mailroom_endpoint(request: Request):
         return err(400, "request body must be valid JSON")
     if not isinstance(body, dict):
         return err(400, "request body must be an object")
+    try:
+        canonical(body)
+    except Exception:
+        return err(422, "request contains values outside the JSON contract")
     operation = body.get("operation")
     if operation == "propose":
         return await handle_propose(body)
