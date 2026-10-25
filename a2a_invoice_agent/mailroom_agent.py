@@ -81,6 +81,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS mailroom_receipts (
             evaluation_id TEXT NOT NULL,
             dossier_id TEXT NOT NULL,
+            receipt_id TEXT NOT NULL,
             receipt_json TEXT NOT NULL,
             PRIMARY KEY(evaluation_id, dossier_id),
             UNIQUE(evaluation_id, receipt_id)
