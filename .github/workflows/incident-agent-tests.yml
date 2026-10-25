@@ -1,0 +1,24 @@
+name: Incident agent contract tests
+on:
+  push:
+    branches:
+      - q4-observable-incident-agent
+    paths:
+      - incident_agent/**
+      - .github/workflows/incident-agent-tests.yml
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and run controlled tests
+        run: |
+          python -m pip install -r incident_agent/requirements.txt
+          cd incident_agent
+          INCIDENT_DB_PATH=/tmp/incident-agent-tests.sqlite3 python -m unittest -v test_incident_agent
