@@ -413,14 +413,10 @@ def planner_schema(roots: list[str], evidence_ids: list[str], diag_names: list[s
             "rootCause": {"type": "string", "enum": roots},
             "evidence": {
                 "type": "array",
-                "items": {"type": "string", "enum": evidence_ids},
-                "minItems": 2,
-                "maxItems": 4,
+                "items": {"type": "string"},
             },
             "diagnostics": {
                 "type": "array",
-                "minItems": 1,
-                "maxItems": 3,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -428,7 +424,7 @@ def planner_schema(roots: list[str], evidence_ids: list[str], diag_names: list[s
                         "arguments": {"type": "object"},
                         "evidence": {
                             "type": "array",
-                            "items": {"type": "string", "enum": evidence_ids},
+                            "items": {"type": "string"},
                         },
                     },
                     "required": ["toolName", "arguments", "evidence"],
