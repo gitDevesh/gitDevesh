@@ -510,8 +510,11 @@ def validate_schema_args(tool: dict[str, Any], arguments: Any) -> dict[str, Any]
     schema = tool.get("inputSchema") or {"type": "object"}
     try:
         validate(instance=arguments, schema=schema)
-    except ValidationError:
-        raise ValueError("tool arguments do not match the supplied schema") from None
+    except ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path) or "$"
+        reason = str(exc.validator or "schema")
+        name = str(tool.get("name") or "tool")
+        raise ValueError(f"tool arguments do not match schema for {name} ({reason} at {path})") from None
     return arguments
 
 
