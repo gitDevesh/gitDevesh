@@ -406,46 +406,92 @@ def model_prompt(agent_name: str, incident: dict[str, Any], catalog: list[dict[s
     )
 
 
-def planner_schema(roots: list[str], evidence_ids: list[str], diag_names: list[str], effect_names: list[str]) -> dict[str, Any]:
+def gemini_schema_subset(schema: Any) -> Any:
+    """Keep tool schemas to keywords supported by Gemini JSON output."""
+    supported = {
+        "type", "title", "description", "enum", "items", "minItems", "maxItems",
+        "minimum", "maximum", "anyOf", "oneOf", "properties", "additionalProperties",
+        "required", "format",
+    }
+    if isinstance(schema, list):
+        return [gemini_schema_subset(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    result: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key not in supported:
+            if key == "const":
+                result["enum"] = [value]
+            continue
+        if key == "properties" and isinstance(value, dict):
+            result[key] = {name: gemini_schema_subset(child) for name, child in value.items()}
+        elif key in ("items", "anyOf", "oneOf"):
+            result[key] = gemini_schema_subset(value)
+        elif key == "additionalProperties" and isinstance(value, dict):
+            result[key] = gemini_schema_subset(value)
+        else:
+            result[key] = value
+    return result
+
+
+def tool_proposal_schema(
+    names: list[str],
+    catalog_by_name: dict[str, dict[str, Any]],
+    evidence_ids: list[str],
+) -> dict[str, Any]:
+    variants = []
+    for name in names:
+        tool = catalog_by_name[name]
+        arguments_schema = gemini_schema_subset(tool.get("inputSchema") or {"type": "object"})
+        variants.append({
+            "type": "object",
+            "properties": {
+                "toolName": {"type": "string", "enum": [name]},
+                "arguments": arguments_schema,
+                "evidence": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string", "enum": evidence_ids},
+                },
+            },
+            "required": ["toolName", "arguments", "evidence"],
+            "additionalProperties": False,
+        })
+    if len(variants) == 1:
+        return variants[0]
+    return {"oneOf": variants}
+
+
+def planner_schema(
+    roots: list[str],
+    evidence_ids: list[str],
+    diag_names: list[str],
+    effect_names: list[str],
+    catalog: list[dict[str, Any]],
+    maximum_diagnostics: int,
+) -> dict[str, Any]:
+    catalog_by_name = {tool["name"]: tool for tool in catalog}
     return {
         "type": "object",
         "properties": {
             "rootCause": {"type": "string", "enum": roots},
             "evidence": {
                 "type": "array",
-                "items": {"type": "string"},
+                "minItems": 2,
+                "maxItems": 4,
+                "items": {"type": "string", "enum": evidence_ids},
             },
             "diagnostics": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "toolName": {"type": "string", "enum": diag_names},
-                        "arguments": {"type": "object"},
-                        "evidence": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                    },
-                    "required": ["toolName", "arguments", "evidence"],
-                },
+                "minItems": 1,
+                "maxItems": min(3, maximum_diagnostics),
+                "items": tool_proposal_schema(diag_names, catalog_by_name, evidence_ids),
             },
-            "effect": {
-                "type": "object",
-                "properties": {
-                    "toolName": {"type": "string", "enum": effect_names},
-                    "arguments": {"type": "object"},
-                    "evidence": {
-                        "type": "array",
-                        "items": {"type": "string", "enum": evidence_ids},
-                    },
-                },
-                "required": ["toolName", "arguments", "evidence"],
-            },
+            "effect": tool_proposal_schema(effect_names, catalog_by_name, evidence_ids),
         },
         "required": ["rootCause", "evidence", "diagnostics", "effect"],
+        "additionalProperties": False,
     }
-
 
 def call_planner(agent_name: str, incident: dict[str, Any], catalog: list[dict[str, Any]], policy: dict[str, Any], roots: list[str], evidence_ids: list[str]) -> dict[str, Any]:
     key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key") or os.getenv("gemini_api") or os.getenv("GOOGLE_API_KEY")
@@ -461,7 +507,7 @@ def call_planner(agent_name: str, incident: dict[str, Any], catalog: list[dict[s
         raise RuntimeError("no diagnostic tools are available")
 
     endpoint = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-    schema = planner_schema(roots, evidence_ids, diag_names, effect_names)
+    schema = planner_schema(roots, evidence_ids, diag_names, effect_names, catalog, policy.get("maximumDiagnostics", 3))
     request_body = {
         "system_instruction": {
             "parts": [{
