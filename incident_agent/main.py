@@ -448,7 +448,7 @@ def planner_schema(roots: list[str], evidence_ids: list[str], diag_names: list[s
 
 
 def call_planner(agent_name: str, incident: dict[str, Any], catalog: list[dict[str, Any]], policy: dict[str, Any], roots: list[str], evidence_ids: list[str]) -> dict[str, Any]:
-    key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key") or os.getenv("GOOGLE_API_KEY")
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key") or os.getenv("gemini_api") or os.getenv("GOOGLE_API_KEY")
     if not key:
         raise RuntimeError("model provider is not configured")
     effect_names = list(dict.fromkeys(policy.get("effectTools", []) + policy.get("approvalRequiredFor", [])))
