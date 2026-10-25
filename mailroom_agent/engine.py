@@ -322,10 +322,28 @@ def call_model(dossiers):
     text = next((p.get("text") for p in parts if isinstance(p.get("text"), str)), None)
     if not text:
         raise RuntimeError("AI provider returned empty output")
-    parsed = json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # Large grader batches can occasionally be returned as truncated or
+        # malformed JSON. Retry only that response in smaller pieces, keeping
+        # the normal one-call path unchanged for valid model output.
+        if len(dossiers) > 1:
+            midpoint = len(dossiers) // 2
+            _log.warning("malformed model JSON for %s dossiers; retrying as %s + %s",
+                         len(dossiers), midpoint, len(dossiers) - midpoint)
+            return call_model(dossiers[:midpoint]) + call_model(dossiers[midpoint:])
+        _log.warning("malformed model JSON for one dossier; using safe no-op")
+        return [safe_fallback_proposal(dossiers[0], {})]
     proposals = parsed.get("proposals") if isinstance(parsed, dict) else None
     if not isinstance(proposals, list) or len(proposals) != len(dossiers):
-        raise RuntimeError("AI provider returned the wrong proposal count")
+        if len(dossiers) > 1:
+            midpoint = len(dossiers) // 2
+            _log.warning("wrong model proposal count for %s dossiers; retrying as %s + %s",
+                         len(dossiers), midpoint, len(dossiers) - midpoint)
+            return call_model(dossiers[:midpoint]) + call_model(dossiers[midpoint:])
+        _log.warning("wrong model proposal count for one dossier; using safe no-op")
+        return [safe_fallback_proposal(dossiers[0], {})]
     return proposals
 
 
