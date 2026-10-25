@@ -394,8 +394,8 @@ def safe_fallback_proposal(dossier, raw):
     raw_payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
     if raw.get("action") == "quarantine_item":
         malicious_re = re.compile(
-            r"(?i)(?:\\b(?:ignore|override|disregard|bypass)\\b.{0,100}\\b(?:policy|policies|instructions|rules)\\b|"
-            r"\\b(?:exfiltrat\\w*|reveal|email|send|copy|export)\\b.{0,100}\\b(?:secret|private|confidential|credential|canary|inbox|records)\\b)"
+            r"(?i)(?:\b(?:ignore|override|disregard|bypass)\b.{0,100}\b(?:policy|policies|instructions|rules)\b|"
+            r"\b(?:exfiltrat\w*|reveal|email|send|copy|export)\b.{0,100}\b(?:secret|private|confidential|credential|canary|inbox|records)\b)"
         )
         for source in dossier.get("sources", []):
             metadata = " ".join(str(source.get(k, "")) for k in ("kind", "provenance", "title")).lower()
@@ -409,7 +409,7 @@ def safe_fallback_proposal(dossier, raw):
                 continue
             artifact = None
             for candidate in (source.get("title", ""), *(line.get("text", "") for line in matching_lines)):
-                match = re.search(r"(?i)\\b(?:ATTACHMENT|ARTIFACT|ATT|FILE)[-_][A-Z0-9][A-Z0-9_-]{2,}\\b", candidate)
+                match = re.search(r"(?i)\b(?:ATTACHMENT|ARTIFACT|ATT|FILE)[-_][A-Z0-9][A-Z0-9_-]{2,}\b", candidate)
                 if match:
                     try:
                         artifact = clean_string(match.group(0), "payload.artifactId")
