@@ -57,7 +57,7 @@ jobs:
                   "title": "Checkout API high latency",
                   "service": "checkout-api",
                   "severity": "high",
-                  "transcript": "[E-101] Checkout p95 latency rose after release r42.\\n[E-102] Database pool wait is 8 seconds and active connections are 100/100.\\n[E-103] Queue depth and payment dependency latency remain normal.",
+                  "transcript": "[E-101] Checkout p95 latency rose after release r42.\n[E-102] Database pool wait is 8 seconds and active connections are 100/100.\n[E-103] Queue depth and payment dependency latency remain normal.",
                   "allowedRootCauses": ["database_pool_exhaustion", "bad_deployment", "dependency_timeout", "queue_backlog", "capacity_limit", "network_partition"]
               },
               "toolCatalog": diagnostics + effects,
