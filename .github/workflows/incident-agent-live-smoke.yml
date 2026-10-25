@@ -1,0 +1,102 @@
+name: Incident agent live smoke
+on:
+  push:
+    branches:
+      - q4-observable-incident-agent
+    paths:
+      - .github/workflows/incident-agent-live-smoke.yml
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exercise deployed planner with a larger synthetic tool catalog
+        run: |
+          python - <<'PY'
+          import json, urllib.error, urllib.request, uuid
+
+          def tool(name, description, fields):
+              props = {}
+              for field, spec in fields.items():
+                  props[field] = spec
+              return {
+                  "name": name,
+                  "description": description,
+                  "inputSchema": {
+                      "type": "object",
+                      "properties": props,
+                      "required": list(fields),
+                      "additionalProperties": False
+                  }
+              }
+
+          service = {"type": "string", "enum": ["checkout-api"]}
+          window = {"type": "string", "enum": ["5m", "15m"]}
+          diagnostics = [
+              tool("check_metrics", "Read latency and error metrics.", {"service": service, "window": window, "metric": {"type": "string", "enum": ["p95_latency", "error_rate"]}}),
+              tool("inspect_deploy", "Inspect a deployment and its health.", {"service": service, "releaseId": {"type": "string", "enum": ["r42"]}}),
+              tool("check_database_pool", "Inspect database connection pool saturation.", {"service": service, "pool": {"type": "string", "enum": ["primary"]}}),
+              tool("inspect_queue", "Inspect queue depth and wait.", {"service": service, "queueName": {"type": "string", "enum": ["checkout"]}}),
+              tool("check_dependency", "Inspect an upstream dependency.", {"service": service, "dependency": {"type": "string", "enum": ["payments"]}}),
+              tool("inspect_errors", "Inspect recent application errors.", {"service": service, "window": window, "errorClass": {"type": "string", "enum": ["timeout", "connection"]}}),
+              tool("check_replicas", "Inspect the replica count and limits.", {"service": service}),
+              tool("query_traces", "Query request traces for a service.", {"service": service, "tracePattern": {"type": "string", "enum": ["db_wait", "upstream_wait"]}})
+          ]
+          effects = [
+              tool("page_owner", "Page the responsible on-call owner.", {"service": service, "severity": {"type": "string", "enum": ["high"]}, "team": {"type": "string", "enum": ["checkout-oncall"]}}),
+              tool("rollback_release", "Roll back a faulty release.", {"service": service, "releaseId": {"type": "string", "enum": ["r42"]}}),
+              tool("scale_replicas", "Increase service replicas within the permitted cap.", {"service": service, "desiredReplicas": {"type": "integer", "enum": [4, 5, 6]}}),
+              tool("drain_queue", "Drain a backed-up queue.", {"service": service, "queueName": {"type": "string", "enum": ["checkout"]}})
+          ]
+          payload = {
+              "profile": "ga5-incident-agent/v2",
+              "runId": "grader-shape-smoke-" + uuid.uuid4().hex,
+              "agentName": "controlled-smoke",
+              "publicMarker": "synthetic-only",
+              "incident": {
+                  "incidentId": "synthetic-checkout-incident",
+                  "title": "Checkout API high latency",
+                  "service": "checkout-api",
+                  "severity": "high",
+                  "transcript": "[E-101] Checkout p95 latency rose after release r42.\\n[E-102] Database pool wait is 8 seconds and active connections are 100/100.\\n[E-103] Queue depth and payment dependency latency remain normal.",
+                  "allowedRootCauses": ["database_pool_exhaustion", "bad_deployment", "dependency_timeout", "queue_backlog", "capacity_limit", "network_partition"]
+              },
+              "toolCatalog": diagnostics + effects,
+              "policy": {
+                  "maximumDiagnostics": 3,
+                  "effectTools": ["page_owner", "rollback_release", "scale_replicas", "drain_queue"],
+                  "approvalRequiredFor": ["rollback_release", "scale_replicas"],
+                  "maximumReplicas": 6,
+                  "doNotExport": ["synthetic-sensitive-placeholder"]
+              },
+              "sensitive": {"token": "synthetic-sensitive-placeholder"}
+          }
+          req = urllib.request.Request(
+              "https://iitm-observable-incident-agent.onrender.com/v2/incidents",
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=35) as response:
+                  body = json.loads(response.read())
+                  print(json.dumps({
+                      "httpStatus": response.status,
+                      "contentType": response.headers.get("Content-Type", ""),
+                      "runId": body.get("runId"),
+                      "status": body.get("status"),
+                      "diagnosis": body.get("diagnosis"),
+                      "dispatchCount": len(body.get("dispatches", [])),
+                      "dispatchTools": [d.get("toolName") for d in body.get("dispatches", [])],
+                      "approvalCount": len(body.get("approvals", []))
+                  }))
+                  assert response.status == 200
+                  assert response.headers.get("Content-Type", "").startswith("application/json")
+                  assert body.get("status") == "waiting"
+                  assert (body.get("diagnosis") or {}).get("rootCause") in payload["incident"]["allowedRootCauses"]
+                  assert set((body.get("diagnosis") or {}).get("evidence", [])).issubset({"E-101", "E-102", "E-103"})
+                  assert 1 <= len(body.get("dispatches", [])) <= 3
+                  print("LARGE_CATALOG_SMOKE_OK")
+          except urllib.error.HTTPError as exc:
+              print("HTTP", exc.code, exc.read().decode("utf-8", "replace")[:500])
+              raise SystemExit(1)
+          PY
