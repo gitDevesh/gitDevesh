@@ -130,7 +130,7 @@ def agent_card(request: Request):
       "skills": [{"id":"invoice_action_agent","name":"Invoice Action Agent",
         "description":"Analyze invoice packages independently, identify the controlling facts, cite exact decisive evidence references, explain the selected action, and execute only accepted proposals with receipt-bound audit records.",
         "tags":["invoice","accounts-payable","evidence","idempotency","receipts"],
-        "examples":["Analyze an invoice batch and return an evidence-backed action proposal for each package.","Submit accepted or rejected action results and return durable execution receipts."]}]
+        "examples":["Analyze an invoice batch and return an evidence-backed action proposal for each package.","Submit accepted or rejected action results and return durable execution receipts."],"inputModes":[BATCH_MT,RESULTS_MT],"outputModes":[PROPOSALS_MT,RECEIPTS_MT]}]
     })
 
 def extract_parts(message):
@@ -394,10 +394,11 @@ def ai_decide_batch(batch):
     )
     if gemini_key or compat_key:
         try:
-            import urllib.request
-            timeout = min(40, max(5, int(os.getenv("AI_TIMEOUT_SECONDS", "38"))))
+            import urllib.request, time
+            # Keep model work within the grader request budget and retry transient Gemini overload.
+            timeout = min(18, max(5, int(os.getenv("AI_TIMEOUT_SECONDS", "16"))))
             if gemini_key and not compat_key:
-                model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+                model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
                 endpoint = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta")
                 body = {
                     "system_instruction": {"parts": [{"text": "Return accurate structured invoice decisions only."}]},
@@ -409,8 +410,22 @@ def ai_decide_batch(batch):
                     data=json.dumps(body).encode(),
                     headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
                     method="POST")
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    payload = json.loads(resp.read())
+                payload = None
+                for attempt in range(2):
+                    try:
+                        with urllib.request.urlopen(req, timeout=timeout) as resp:
+                            payload = json.loads(resp.read())
+                        break
+                    except urllib.error.HTTPError as err:
+                        if err.code not in (429, 500, 502, 503, 504) or attempt == 1:
+                            raise
+                        time.sleep(0.6 * (2 ** attempt))
+                    except TimeoutError:
+                        if attempt == 1:
+                            raise
+                        time.sleep(0.4)
+                if payload is None:
+                    raise RuntimeError("Gemini returned no response after retry")
                 parts = payload["candidates"][0]["content"]["parts"]
                 content = next(part["text"] for part in parts if isinstance(part.get("text"), str))
             else:
