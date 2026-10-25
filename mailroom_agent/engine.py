@@ -333,8 +333,13 @@ def clean_string(value, field):
     if not isinstance(value, str) or not value.strip() or len(value) > 256:
         raise ValueError(f"{field} must be a nonempty string of at most 256 characters")
     value = value.strip()
-    if re.search(r"(?i)(?:vault|canary|secret)[-_:\s]?[a-z0-9]{4,}", value):
-        raise ValueError("proposal contains a protected canary-like value")
+    if re.search(
+        r"(?i)(?:\b(?:vault|canary|secret)[-_:\s]?[a-z0-9]{4,}\b|"
+        r"\b(?:api[_ -]?key|access[_ -]?token|password|passcode|credential|bearer|private[_ -]?key)\s*[:=]\s*[^\s,;]{4,}|"
+        r"\bAIza[0-9A-Za-z_-]{25,}\b|\bAKIA[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9]{20,}\b)",
+        value,
+    ):
+        raise ValueError("proposal contains a protected credential or canary-like value")
     return value
 
 
