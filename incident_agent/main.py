@@ -1207,7 +1207,7 @@ async def create_incident(request: Request) -> JSONResponse:
             )
         except Exception as exc:
             close_model_span(state, planner_span["spanId"], False, type(exc).__name__)
-            log.warning("incident planning failed: %s", type(exc).__name__)
+            log.warning("incident planning failed: %s: %s", type(exc).__name__, str(exc))
             return error(503, "incident planning is temporarily unavailable")
         close_model_span(state, planner_span["spanId"], True)
 
