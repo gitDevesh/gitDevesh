@@ -1,4 +1,4 @@
-name: Temporary mailroom decision diagnosis
+name: Temporary mailroom decision diagnosis v2
 on:
   push:
     branches:
