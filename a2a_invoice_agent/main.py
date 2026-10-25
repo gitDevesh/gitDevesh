@@ -88,7 +88,7 @@ def proto_error(status, code, message):
 async def a2a_headers(request: Request, call_next):
     # Only the Agent Card is public; every other route, including health
     # and preflight requests, is protected by the exact Bearer-token contract.
-    if request.url.path == "/.well-known/agent-card.json":
+    if request.url.path in ("/.well-known/agent-card.json", "/"):
         return await call_next(request)
     # Authenticate protected resources before validating protocol headers so an
     # unauthenticated task-list request consistently receives 401.
@@ -685,3 +685,7 @@ def cancel_task(task_id: str, request: Request):
       if not task_store_terminal(task,principal,batch_id,("TASK_STATE_SUBMITTED","TASK_STATE_WORKING","TASK_STATE_INPUT_REQUIRED")):
           return proto_error(409,"TASK_TERMINAL","Another terminal operation already won.")
     return JSONResponse(task,media_type=A2A_JSON)
+
+
+from mailroom_agent import router as mailroom_router
+app.include_router(mailroom_router)
