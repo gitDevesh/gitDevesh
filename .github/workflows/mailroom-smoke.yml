@@ -15,7 +15,7 @@ jobs:
       - name: POST one synthetic completed-order dossier
         run: |
           node <<'NODE'
-          const { generateKeyPairSync } = require("node:crypto");
+          import { generateKeyPairSync } from "node:crypto";
           const { publicKey } = generateKeyPairSync("ed25519");
           const jwk = publicKey.export({ format: "jwk" });
           const stamp = Date.now();
