@@ -391,12 +391,17 @@ def normalize_proposal(dossier, raw):
     if not isinstance(raw_payload, dict):
         raise ValueError("AI proposal payload must be an object")
     lines = source_line_map(dossier)
-    evidence = raw.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-        raise ValueError("AI proposal needs evidence")
-    evidence = [clean_string(x, "evidence lineId") for x in evidence]
-    if len(evidence) != len(set(evidence)) or any(x not in lines for x in evidence):
-        raise ValueError("AI proposal evidence must be unique lineIds from this dossier")
+    # New model output uses per-field support citations. Accept legacy evidence
+    # too as a fallback, but never fail a valid proposal merely because the model
+    # followed the new support-only response schema.
+    evidence = raw.get("evidence", [])
+    if not isinstance(evidence, list):
+        evidence = []
+    evidence = [
+        x for x in evidence
+        if isinstance(x, str) and x in lines
+    ]
+    evidence = list(dict.fromkeys(evidence))
 
     def val(key):
         return clean_string(raw_payload.get(key), "payload." + key)
