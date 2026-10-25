@@ -1,0 +1,97 @@
+name: Incident agent live smoke
+on:
+  push:
+    branches:
+      - q4-observable-incident-agent
+    paths:
+      - .github/workflows/incident-agent-live-smoke.yml
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send one synthetic incident to the deployed service
+        run: |
+          python - <<'PY'
+          import json, urllib.error, urllib.request, uuid
+
+          url = "https://iitm-observable-incident-agent.onrender.com/v2/incidents"
+          payload = {
+              "profile": "ga5-incident-agent/v2",
+              "runId": "live-smoke-" + uuid.uuid4().hex,
+              "agentName": "controlled-smoke",
+              "publicMarker": "synthetic-only",
+              "incident": {
+                  "incidentId": "synthetic-billing-incident",
+                  "title": "Billing API elevated errors",
+                  "service": "billing-api",
+                  "severity": "high",
+                  "transcript": "[E-101] Billing API 5xx rate rose after release 42.\\n[E-102] Connection pool is at 100 of 100 and requests are timing out.",
+                  "allowedRootCauses": ["database_pool_exhaustion", "bad_deployment", "upstream_timeout"]
+              },
+              "toolCatalog": [
+                  {
+                      "name": "check_health",
+                      "description": "Inspect current health and resource saturation for the service.",
+                      "inputSchema": {
+                          "type": "object",
+                          "properties": {"service": {"type": "string", "enum": ["billing-api"]}},
+                          "required": ["service"],
+                          "additionalProperties": False
+                      }
+                  },
+                  {
+                      "name": "page_oncall",
+                      "description": "Page the responsible on-call team about the incident.",
+                      "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                              "service": {"type": "string", "enum": ["billing-api"]},
+                              "severity": {"type": "string", "enum": ["high"]}
+                          },
+                          "required": ["service", "severity"],
+                          "additionalProperties": False
+                      }
+                  }
+              ],
+              "policy": {
+                  "maximumDiagnostics": 1,
+                  "effectTools": ["page_oncall"],
+                  "approvalRequiredFor": []
+              }
+          }
+          request = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=35) as response:
+                  status = response.status
+                  content_type = response.headers.get("Content-Type", "")
+                  data = json.loads(response.read())
+          except urllib.error.HTTPError as exc:
+              print("HTTP", exc.code, exc.read().decode("utf-8", "replace")[:500])
+              raise SystemExit(1)
+
+          print(json.dumps({
+              "httpStatus": status,
+              "contentType": content_type,
+              "runId": data.get("runId"),
+              "status": data.get("status"),
+              "rootCause": (data.get("diagnosis") or {}).get("rootCause"),
+              "evidence": (data.get("diagnosis") or {}).get("evidence"),
+              "dispatchCount": len(data.get("dispatches", [])),
+              "dispatchTools": [d.get("toolName") for d in data.get("dispatches", [])]
+          }))
+          assert status == 200, f"unexpected HTTP status: {status}"
+          assert content_type.startswith("application/json"), f"unexpected Content-Type: {content_type}"
+          assert data.get("status") == "waiting", "expected waiting response"
+          diagnosis = data.get("diagnosis") or {}
+          assert diagnosis.get("rootCause") in payload["incident"]["allowedRootCauses"], "invalid rootCause"
+          assert set(diagnosis.get("evidence", [])).issubset({"E-101", "E-102"}), "invalid evidence IDs"
+          assert len(data.get("dispatches", [])) == 1, "expected exactly one diagnostic dispatch"
+          assert data["dispatches"][0].get("toolName") == "check_health", "unexpected diagnostic tool"
+          assert data["dispatches"][0].get("arguments") == {"service": "billing-api"}, "unexpected diagnostic arguments"
+          print("LIVE_SMOKE_OK")
+          PY
