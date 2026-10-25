@@ -86,8 +86,7 @@ def proto_error(status, code, message):
 
 @app.middleware("http")
 async def a2a_headers(request: Request, call_next):
-    # Only the Agent Card is public; every other route, including health
-    # and preflight requests, is protected by the exact Bearer-token contract.
+    # The Agent Card and assignment mailroom endpoint are public. Protect A2A task routes.
     if request.url.path in ("/.well-known/agent-card.json", "/"):
         return await call_next(request)
     # Authenticate protected resources before validating protocol headers so an
