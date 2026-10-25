@@ -353,6 +353,8 @@ def select_evidence(dossier, raw, action, target, payload, fallback):
         candidates = support.get(path) if isinstance(support, dict) else None
         if isinstance(candidates, str):
             candidates = [candidates]
+        elif not isinstance(candidates, list):
+            candidates = []
         # One cited line per claim is the minimal default; multiple lines are
         # requested only when the model says the claim requires joint evidence.
         if isinstance(candidates, list):
