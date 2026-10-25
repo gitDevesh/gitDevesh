@@ -40,7 +40,7 @@ def init_db():
 
 init_db()
 
-_ai_env_keys = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "AI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY")
+_ai_env_keys = ("GEMINI_API_KEY", "gemini_api_key", "GOOGLE_API_KEY", "OPENAI_API_KEY", "AI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY")
 if any(os.getenv(key) for key in _ai_env_keys):
     logging.getLogger("invoice-agent").info("Hosted AI provider credentials are configured.")
 else:
@@ -373,7 +373,7 @@ def choose_fallback_action(package):
 def ai_decide_batch(batch):
     packages = batch.get("packages") or []
     # Accept the common hosted-provider keys used by this assignment.
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key") or os.getenv("GOOGLE_API_KEY")
     compat_key = (os.getenv("OPENAI_API_KEY") or os.getenv("AI_API_KEY")
                   or os.getenv("GROQ_API_KEY") or os.getenv("OPENROUTER_API_KEY"))
     prompt = (
