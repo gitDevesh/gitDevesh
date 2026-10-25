@@ -1,4 +1,4 @@
-name: Temporary mailroom decision diagnosis v2
+name: Temporary mailroom decision diagnosis v3
 on:
   push:
     branches:
@@ -216,7 +216,7 @@ jobs:
             proposalCount: proposals.length,
             cases: rows
           }));
-          if (response.status !== 200 || proposals.length !== 6 ||
+          if (response.status !== 200 || proposals.length !== cases.length ||
               result.profile !== request.profile || result.evaluationId !== request.evaluationId ||
               result.status !== "awaiting_receipts") {
             throw new Error("Decision diagnosis API contract failed");
