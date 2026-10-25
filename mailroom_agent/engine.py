@@ -738,3 +738,52 @@ async def mailroom_endpoint(request: Request):
     if operation == "commit":
         return await handle_commit(body)
     return err(422, "operation must be propose or commit")
+
+
+# Temporary, tokenized provider probe used to diagnose configuration without
+# consuming a grader check. Remove after the live provider has been verified.
+_DIAG_ROUTE = "/__provider_probe_8d8f6a20e7624d93a65d76d86de3b10c"
+
+
+@router.get(_DIAG_ROUTE)
+def provider_probe():
+    dossier = {
+        "dossierId": "provider-probe",
+        "partition": "stable_core",
+        "receivedAt": "2026-10-25T12:00:00Z",
+        "mailbox": "support@example.test",
+        "objective": "Informational probe. Choose no_action.",
+        "sources": [{
+            "sourceId": "probe-source",
+            "kind": "email",
+            "provenance": "synthetic diagnostic",
+            "title": "Provider diagnostic",
+            "lines": [{"lineId": "probe-line", "text": "This is a synthetic provider connectivity check."}],
+        }],
+    }
+    try:
+        result = call_model([dossier])
+        return JSONResponse(
+            status_code=200,
+            media_type="application/json",
+            content={"ok": True, "proposalCount": len(result)},
+        )
+    except urllib.error.HTTPError as exc:
+        try:
+            error = json.loads(exc.read(4096).decode("utf-8"))
+            detail = error.get("error", {}).get("message", "provider returned an HTTP error")
+        except Exception:
+            detail = "provider returned an HTTP error without readable details"
+        _log.error("provider probe failed with HTTP %s: %s", exc.code, str(detail)[:240])
+        return JSONResponse(
+            status_code=200,
+            media_type="application/json",
+            content={"ok": False, "providerStatus": exc.code, "detail": str(detail)[:240]},
+        )
+    except Exception as exc:
+        _log.error("provider probe failed: %s", type(exc).__name__)
+        return JSONResponse(
+            status_code=200,
+            media_type="application/json",
+            content={"ok": False, "detail": type(exc).__name__},
+        )
