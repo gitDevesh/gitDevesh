@@ -1117,7 +1117,7 @@ def process_approval(state: dict[str, Any], receipt_id: str, approvals: list[Any
 
 @app.get("/")
 async def root() -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "observable-incident-agent", "profile": PROFILE})
+    return JSONResponse({"status": "ok", "service": "observable-incident-agent", "profile": PROFILE, "health": "/health", "createIncident": "POST /v2/incidents", "receipt": "POST /v2/incidents/{run_id}/receipts", "getIncident": "GET /v2/incidents/{run_id}"})
 
 
 @app.get("/health")
