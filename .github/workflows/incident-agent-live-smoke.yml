@@ -25,7 +25,7 @@ jobs:
                   "title": "Billing API elevated errors",
                   "service": "billing-api",
                   "severity": "high",
-                  "transcript": "[E-101] Billing API 5xx rate rose after release 42.\\n[E-102] Connection pool is at 100 of 100 and requests are timing out.",
+                  "transcript": "[E-101] Billing API 5xx rate rose after release 42.\n[E-102] Connection pool is at 100 of 100 and requests are timing out.",
                   "allowedRootCauses": ["database_pool_exhaustion", "bad_deployment", "upstream_timeout"]
               },
               "toolCatalog": [
