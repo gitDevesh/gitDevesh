@@ -278,13 +278,13 @@ def contains_sensitive_literal(dossier, serialized_arguments):
     ))
 
 
-def send_has_scoped_trusted_approval(dossier, target, payload):
-    """Require one trusted current source to scope this exact outbound notice."""
+def scoped_trusted_approval_source(dossier, target, payload):
+    """Find a trusted current source that scopes this exact outbound notice."""
     recipient = target.get("id") if isinstance(target, dict) else None
     reference = payload.get("referenceId") if isinstance(payload, dict) else None
     status = payload.get("status") if isinstance(payload, dict) else None
     if not all(isinstance(v, str) and v for v in (recipient, reference, status)):
-        return False
+        return None
     approval_re = re.compile(r"(?i)\b(?:approv\w*|authori[sz]\w*|signed\s+off|permitted)\b")
     notice_re = re.compile(r"(?i)\b(?:delivery\s+notice|approved[_ -]delivery[_ -]notice|notice\s+template|outbound\s+notice)\b")
     stale_re = re.compile(r"(?i)\b(?:revoked|expired|superseded|stale|withdrawn|obsolete)\b")
@@ -296,8 +296,12 @@ def send_has_scoped_trusted_approval(dossier, target, payload):
             continue
         if (approval_re.search(text) and notice_re.search(text)
                 and recipient in text and reference in text and status in text):
-            return True
-    return False
+            return source
+    return None
+
+
+def send_has_scoped_trusted_approval(dossier, target, payload):
+    return scoped_trusted_approval_source(dossier, target, payload) is not None
 
 
 def ai_prompt(dossiers):
@@ -320,9 +324,24 @@ def ai_prompt(dossiers):
         "evidence sentence. For payload.status, copy only the status label or state (for example, use 'delayed' from "
         "'Order X is delayed; revised date is Y'); do not include surrounding facts or dates unless the field asks for them. "
         "For payload.value, copy only the authorized delivery-window value. For payload.artifactId, use the artifact's "
-        "identifier from its source/title/text, never adjacent confidential or canary text. Do not invent or normalize "
+        "identifier from its source/title/text, never adjacent confidential or canary text.\n\n"
+        "FIELD-BY-FIELD CHECK BEFORE OUTPUT: create_draft recipient is the exact intended customer address, referenceId "
+        "is the exact order/reference identifier, and status is only the concise current status label (never its date or "
+        "whole sentence). update_internal_record target.id is the case identifier, sourceEventId is the exact event ID "
+        "that authorizes the change (not the source ID), and value is only the approved delivery-window value. "
+        "send_approved_notice target.id is the exact approved recipient; referenceId and status must match the trusted "
+        "approval scope and current trusted case state. request_confirmation claimedSender is the exact sender identity, "
+        "target.id is the exact owning approval team, and referenceId is the exact case/order reference. "
+        "quarantine_item artifactId is the malicious attachment/artifact ID, never its contents. no_action referenceId "
+        "is the case/order reference, not an event ID. For every field, trace the value to this dossier only; if similar "
+        "identifiers appear, use the one with the right field label and provenance. Do not invent or normalize "
         "names, dates, addresses, IDs, statuses, or team names. Return only the "
         "documented target and payload keys; fixed schema constants must have their specified values.\n\n"
+        "FIELD GROUNDING: In each model proposal, also include a temporary `fieldEvidence` object. Map each dynamic "
+        "field path (such as `payload.referenceId` or `target.id`) to exactly one lineId from this dossier that directly "
+        "supports that field's value. Do not use one generic lineId for unrelated fields. This temporary object is used "
+        "only to build the final citations and will be removed from the public response. Keep the independently selected "
+        "action fixed while checking its field values; do not change a correct action just to simplify its arguments.\n\n"
         "EVIDENCE RULES: Return the smallest evidence array that proves the chosen action and every case-specific "
         "argument. Include the controlling trusted authority/intent and the source of each dynamic recipient, team, "
         "case/reference/event ID, status, sender, or value. Reuse a lineId when it supports multiple fields. Include "
@@ -330,7 +349,7 @@ def ai_prompt(dossiers):
         "untrusted instructions. Preserve exact lineId strings.\n\n"
         "Output JSON only: {\"proposals\":[{\"dossierId\":\"...\",\"action\":\"...\","
         "\"target\":null|{\"kind\":\"...\",\"id\":\"...\"},\"payload\":{...},"
-        "\"evidence\":[\"lineId\"]}]}. No rationale or extra keys. Exact schemas: create_draft target "
+        "\"evidence\":[\"lineId\"],\"fieldEvidence\":{\"field.path\":\"lineId\"}}]}. No rationale or other extra keys. Exact schemas: create_draft target "
         "{kind:draft_queue,id:mailbox:<mailbox>}, payload {recipient,referenceId,status,template:order_status}; "
         "update_internal_record target {kind:case_record,id:<case id>}, payload "
         "{field:delivery_window,sourceEventId,value}; send_approved_notice target {kind:email,id:<approved recipient>}, "
@@ -487,12 +506,19 @@ def select_evidence(dossier, raw, action, target, payload, fallback):
     }[action]
     # Preserve the model's compact decision/authority citations and add an
     # exact-value source line only when the selected evidence does not include it.
+    cited = [line_id for line_id in fallback if isinstance(line_id, str) and line_id in lines]
+    field_evidence = raw.get("fieldEvidence") if isinstance(raw.get("fieldEvidence"), dict) else {}
     chosen = []
+    approval_source = (
+        scoped_trusted_approval_source(dossier, target, payload)
+        if action == "send_approved_notice"
+        else None
+    )
+
     def add(line_id):
         if isinstance(line_id, str) and line_id in lines and line_id not in chosen:
             chosen.append(line_id)
-    for line_id in fallback:
-        add(line_id)
+
     for path in required:
         if path == "target.id" and isinstance(target, dict):
             value = target.get("id")
@@ -503,13 +529,35 @@ def select_evidence(dossier, raw, action, target, payload, fallback):
         if any(value in lines[line_id] for line_id in chosen):
             continue
         matches = [line_id for line_id, (text, _) in source_for_line.items() if value in text]
-        if action in ("send_approved_notice", "update_internal_record"):
+        if action == "send_approved_notice" and approval_source is not None:
+            approval_ids = {line["lineId"] for line in approval_source["lines"]}
+            matches = [line_id for line_id in matches if line_id in approval_ids]
+        elif action in ("send_approved_notice", "update_internal_record"):
             trusted_matches = [line_id for line_id in matches if source_for_line[line_id][1]]
             if trusted_matches:
                 matches = trusted_matches
+        field_citation = field_evidence.get(path)
+        field_citations = field_citation if isinstance(field_citation, list) else [field_citation]
+        grounded_field_matches = [line_id for line_id in field_citations if isinstance(line_id, str) and line_id in matches]
+        cited_matches = [line_id for line_id in cited if line_id in matches]
+        if grounded_field_matches:
+            matches = grounded_field_matches
+        elif cited_matches:
+            matches = cited_matches
         if matches:
             add(matches[0])
-    if action in ("send_approved_notice", "update_internal_record"):
+
+    if action == "send_approved_notice" and approval_source is not None:
+        approval_lines = [line for line in approval_source["lines"]]
+        authority_re = re.compile(r"(?i)\b(?:approv\w*|authori[sz]\w*|signed\s+off|permitted)\b")
+        notice_re = re.compile(r"(?i)(?:delivery\s+notice|approved[_ -]delivery[_ -]notice|notice\s+template|outbound\s+notice)")
+        for pattern in (authority_re, notice_re):
+            if any(pattern.search(lines[line_id]) for line_id in chosen):
+                continue
+            matching = [line["lineId"] for line in approval_lines if pattern.search(line["text"])]
+            if matching:
+                add(matching[0])
+    elif action == "update_internal_record":
         authority_re = re.compile(r"(?i)\b(?:approv\w*|authori[sz]\w*|signed\s+off|permitted|authorized\s+to)\b")
         already_cited = any(
             source_for_line[line_id][1] and authority_re.search(source_for_line[line_id][0])
@@ -520,6 +568,39 @@ def select_evidence(dossier, raw, action, target, payload, fallback):
                 if trusted and authority_re.search(text):
                     add(line_id)
                     break
+
+    # Keep one compact line that establishes why this action is appropriate.
+    # The argument-source lines above are always retained; unrelated model
+    # citations are dropped to improve evidence minimality.
+    support_patterns = {
+        "create_draft": re.compile(r"(?i)\b(?:request\w*|please|draft|prepare|want|need|inquir\w*|question)\b"),
+        "update_internal_record": re.compile(r"(?i)\b(?:delivery[ _-]window|update|change|correct|authori[sz]\w*|approv\w*)\b"),
+        "send_approved_notice": re.compile(r"(?i)\b(?:request\w*|notify|notification|send|email|notice)\b"),
+        "request_confirmation": re.compile(r"(?i)\b(?:identity|identit\w*|verify|confirm\w*|mismatch|conflict|unclear|unverified|approval)\b"),
+        "quarantine_item": re.compile(r"(?i)\b(?:ignore|override|disregard|bypass|exfiltrat\w*|reveal|export|prompt injection|instructions?)\b"),
+        "no_action": re.compile(r"(?i)\b(?:already completed|already delivered|duplicate|previously resolved|informational|no action needed)\b"),
+    }
+    if not any(support_patterns[action].search(lines[line_id]) for line_id in chosen):
+        preferred = [line_id for line_id in cited if support_patterns[action].search(lines[line_id])]
+        if action in ("send_approved_notice", "update_internal_record"):
+            trusted = [line_id for line_id in preferred if source_for_line[line_id][1]]
+            if trusted:
+                preferred = trusted
+        if preferred:
+            add(preferred[0])
+        elif cited:
+            for line_id in cited:
+                if line_id not in chosen:
+                    add(line_id)
+                    break
+    if action == "send_approved_notice":
+        request_re = re.compile(r"(?i)\b(?:request\w*|please|notify|notification|send|email)\b")
+        external_intent = [
+            line_id for line_id in cited
+            if not source_for_line[line_id][1] and request_re.search(lines[line_id])
+        ]
+        if external_intent and not any(line_id in external_intent for line_id in chosen):
+            add(external_intent[0])
     return chosen
 
 
@@ -598,6 +679,41 @@ def safe_fallback_proposal(dossier, raw):
     }
 
 
+def recover_explicitly_labelled_value(dossier, raw, field_path, candidate, action):
+    """Repair a malformed argument only from its model-cited, field-labelled line."""
+    field_evidence = raw.get("fieldEvidence") if isinstance(raw, dict) else None
+    refs = field_evidence.get(field_path) if isinstance(field_evidence, dict) else None
+    refs = refs if isinstance(refs, list) else [refs]
+    line_map = source_line_map(dossier)
+    patterns = {
+        "payload.recipient": [r"(?i)\b(?:recipient|to|email)(?:\s+address)?\s*[:=]\s*<?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})"],
+        "target.id:send_approved_notice": [r"(?i)\b(?:approved\s+recipient|recipient|to|email)(?:\s+address)?\s*[:=]\s*<?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})"],
+        "target.id:update_internal_record": [r"(?i)\b(?:case|record)(?:\s+(?:id|number))?\s*[:=#]\s*([A-Z0-9][A-Z0-9_-]{2,})"],
+        "target.id:request_confirmation": [r"(?i)\b(?:owning|approval|approver|case)\s*(?:team|queue|group|id)?\s*[:=#]\s*([^,;\n.]+)"],
+        "payload.referenceId": [r"(?i)\b(?:order|reference|ref|case|ticket|request)(?:\s*(?:id|number|no\.?))?\s*[:=#]\s*([A-Z0-9][A-Z0-9_-]{2,})"],
+        "payload.status": [r"(?i)\b(?:current\s+)?(?:status|state)\s*[:=]\s*([^,;\n.()]+)"],
+        "payload.sourceEventId": [r"(?i)\b(?:source\s+event(?:\s+id)?|event(?:\s+id)?|sourceEventId)\s*[:=#]\s*([A-Z0-9][A-Z0-9_-]{2,})"],
+        "payload.value": [r"(?i)\bdelivery\s+window\s*[:=]\s*([^,;\n.]+)"],
+        "payload.claimedSender": [r"(?i)\b(?:claimed\s+sender|sender|from)(?:\s+address)?\s*[:=]\s*<?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})"],
+        "payload.artifactId": [r"(?i)\b(?:artifact|attachment|file)(?:\s+id)?\s*[:=#]\s*([A-Z0-9][A-Z0-9_-]{2,})"],
+    }
+    keys = [field_path]
+    if field_path == "target.id":
+        keys.append(field_path + ":" + action)
+    selected_lines = [line_map[ref] for ref in refs if isinstance(ref, str) and ref in line_map]
+    if isinstance(candidate, str) and any(candidate in line for line in selected_lines):
+        return candidate
+    for key in keys:
+        for pattern in patterns.get(key, []):
+            for line in selected_lines:
+                match = re.search(pattern, line)
+                if match:
+                    recovered = match.group(1).strip().strip("'\"<> ")
+                    if recovered:
+                        return recovered
+    return candidate
+
+
 def normalize_proposal(dossier, raw):
     if not isinstance(raw, dict) or raw.get("dossierId") != dossier["dossierId"]:
         raise ValueError("AI proposal dossierId does not match input")
@@ -620,7 +736,9 @@ def normalize_proposal(dossier, raw):
                 evidence.append(line_id)
 
     def val(key):
-        return clean_string(raw_payload.get(key), "payload." + key)
+        field_path = "payload." + key
+        recovered = recover_explicitly_labelled_value(dossier, raw, field_path, raw_payload.get(key), action)
+        return clean_string(recovered, field_path)
 
     if action == "create_draft":
         if not isinstance(raw_target, dict):
@@ -636,7 +754,8 @@ def normalize_proposal(dossier, raw):
     elif action == "update_internal_record":
         if not isinstance(raw_target, dict):
             raise ValueError("update_internal_record target is required")
-        target_id = clean_string(raw_target.get("id"), "target.id")
+        target_id = recover_explicitly_labelled_value(dossier, raw, "target.id", raw_target.get("id"), action)
+        target_id = clean_string(target_id, "target.id")
         payload = {
             "field": "delivery_window",
             "sourceEventId": val("sourceEventId"),
@@ -646,9 +765,10 @@ def normalize_proposal(dossier, raw):
     elif action == "send_approved_notice":
         if not isinstance(raw_target, dict):
             raise ValueError("send_approved_notice target is required")
+        recipient = recover_explicitly_labelled_value(dossier, raw, "target.id", raw_target.get("id"), action)
         target = {
             "kind": "email",
-            "id": clean_string(raw_target.get("id"), "target.id"),
+            "id": clean_string(recipient, "target.id"),
         }
         payload = {
             "referenceId": val("referenceId"),
@@ -658,9 +778,10 @@ def normalize_proposal(dossier, raw):
     elif action == "request_confirmation":
         if not isinstance(raw_target, dict):
             raise ValueError("request_confirmation target is required")
+        team = recover_explicitly_labelled_value(dossier, raw, "target.id", raw_target.get("id"), action)
         target = {
             "kind": "approval_queue",
-            "id": clean_string(raw_target.get("id"), "target.id"),
+            "id": clean_string(team, "target.id"),
         }
         payload = {
             "claimedSender": val("claimedSender"),
