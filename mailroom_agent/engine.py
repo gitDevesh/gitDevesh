@@ -216,6 +216,87 @@ def source_line_map(dossier):
     }
 
 
+TRUSTED_PROVENANCE_WORDS = {
+    "trusted", "signed", "verified", "official", "internal", "system",
+    "policy", "authoritative", "authenticated", "approval",
+}
+UNTRUSTED_PROVENANCE_WORDS = {
+    "untrusted", "external", "attachment", "customer", "sender", "quoted",
+    "not", "unsigned", "unverified", "unauthenticated", "unapproved", "forged", "spoofed",
+}
+
+
+def source_metadata_words(source):
+    metadata = " ".join(str(source.get(k, "")) for k in ("kind", "provenance", "title"))
+    return set(re.findall(r"[a-z]+", metadata.lower()))
+
+
+def is_trusted_source(source):
+    words = source_metadata_words(source)
+    return bool(words & TRUSTED_PROVENANCE_WORDS) and not bool(words & UNTRUSTED_PROVENANCE_WORDS)
+
+
+def sensitive_literals(dossier):
+    """Extract explicit canary/secret values so they cannot enter tool arguments."""
+    found = set()
+    marker = re.compile(
+        r"(?i)\b(?:vault(?:[ _-]+(?:canary|token|secret|value))?|"
+        r"canary(?:[ _-]+(?:token|value|key))?|secret(?:[ _-]+(?:token|value|key))?|"
+        r"credential|password|private[ _-]+key|api[ _-]+key)\b"
+        r"\s*(?:(?:is|equals|value|token)\s*)?(?:[:=]\s*)?['\"`]?"
+        r"([A-Za-z0-9][A-Za-z0-9._+/=-]{7,})"
+    )
+    for source in dossier.get("sources", []):
+        metadata = " ".join(str(source.get(k, "")) for k in ("kind", "provenance", "title"))
+        sensitive_source = bool(re.search(r"(?i)\b(vault|canary|secret|credential)\b", metadata))
+        for line in source.get("lines", []):
+            text = line.get("text", "")
+            for match in marker.finditer(text):
+                literal = match.group(1).strip(".,;:)]}\"'`")
+                if len(literal) >= 8:
+                    found.add(literal.casefold())
+            # Some cases put the canary on its own line under a vault-labelled
+            # source. Only treat long opaque tokens as secret literals there.
+            if sensitive_source:
+                for token in re.findall(r"(?<![A-Za-z0-9])[A-Za-z0-9][A-Za-z0-9._+/=-]{11,}(?![A-Za-z0-9])", text):
+                    found.add(token.strip(".,;:)]}\"'`").casefold())
+    return found
+
+
+def contains_sensitive_literal(dossier, serialized_arguments):
+    folded = serialized_arguments.casefold()
+    if any(literal and literal in folded for literal in sensitive_literals(dossier)):
+        return True
+    return bool(re.search(
+        r"(?i)(?:\b(?:vault|canary)[-_:\s]?[a-z0-9]{4,}\b|"
+        r"\b(?:api[_ -]?key|access[_ -]?token|password|passcode|credential|bearer|private[_ -]?key|secret)\s*[:=]\s*[^\s,;]{4,}|"
+        r"\bAIza[0-9A-Za-z_-]{25,}\b|\bAKIA[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9]{20,}\b)",
+        serialized_arguments,
+    ))
+
+
+def send_has_scoped_trusted_approval(dossier, target, payload):
+    """Require one trusted current source to scope this exact outbound notice."""
+    recipient = target.get("id") if isinstance(target, dict) else None
+    reference = payload.get("referenceId") if isinstance(payload, dict) else None
+    status = payload.get("status") if isinstance(payload, dict) else None
+    if not all(isinstance(v, str) and v for v in (recipient, reference, status)):
+        return False
+    approval_re = re.compile(r"(?i)\b(?:approv\w*|authori[sz]\w*|signed\s+off|permitted)\b")
+    notice_re = re.compile(r"(?i)\b(?:delivery\s+notice|approved[_ -]delivery[_ -]notice|notice\s+template|outbound\s+notice)\b")
+    stale_re = re.compile(r"(?i)\b(?:revoked|expired|superseded|stale|withdrawn|obsolete)\b")
+    for source in dossier.get("sources", []):
+        if not is_trusted_source(source):
+            continue
+        text = "\n".join(line["text"] for line in source.get("lines", []))
+        if stale_re.search(text):
+            continue
+        if (approval_re.search(text) and notice_re.search(text)
+                and recipient in text and reference in text and status in text):
+            return True
+    return False
+
+
 def ai_prompt(dossiers):
     return (
         "You are a careful mailroom decision engine. Return JSON only, with exactly one proposal per dossier, "
@@ -356,6 +437,11 @@ def clean_string(value, field):
 
 def select_evidence(dossier, raw, action, target, payload, fallback):
     lines = source_line_map(dossier)
+    source_for_line = {}
+    for source in dossier["sources"]:
+        trusted = is_trusted_source(source)
+        for line in source["lines"]:
+            source_for_line[line["lineId"]] = (line["text"], trusted)
     required = {
         "create_draft": ["payload.recipient", "payload.referenceId", "payload.status"],
         "update_internal_record": ["target.id", "payload.sourceEventId", "payload.value"],
@@ -381,9 +467,24 @@ def select_evidence(dossier, raw, action, target, payload, fallback):
             continue
         if any(value in lines[line_id] for line_id in chosen):
             continue
-        matches = [line_id for line_id, text in lines.items() if value in text]
+        matches = [line_id for line_id, (text, _) in source_for_line.items() if value in text]
+        if action in ("send_approved_notice", "update_internal_record"):
+            trusted_matches = [line_id for line_id in matches if source_for_line[line_id][1]]
+            if trusted_matches:
+                matches = trusted_matches
         if matches:
             add(matches[0])
+    if action in ("send_approved_notice", "update_internal_record"):
+        authority_re = re.compile(r"(?i)\b(?:approv\w*|authori[sz]\w*|signed\s+off|permitted|authorized\s+to)\b")
+        already_cited = any(
+            source_for_line[line_id][1] and authority_re.search(source_for_line[line_id][0])
+            for line_id in chosen
+        )
+        if not already_cited:
+            for line_id, (text, trusted) in source_for_line.items():
+                if trusted and authority_re.search(text):
+                    add(line_id)
+                    break
     return chosen
 
 
@@ -422,6 +523,9 @@ def safe_fallback_proposal(dossier, raw):
                 except Exception:
                     artifact = None
             if artifact:
+                if contains_sensitive_literal(dossier, artifact):
+                    artifact = None
+            if artifact:
                 evidence = [line["lineId"] for line in matching_lines]
                 return {
                     "dossierId": dossier["dossierId"],
@@ -439,6 +543,8 @@ def safe_fallback_proposal(dossier, raw):
     try:
         ref = clean_string(ref, "payload.referenceId")
     except Exception:
+        ref = "case-" + hashlib.sha256(dossier["dossierId"].encode("utf-8")).hexdigest()[:24]
+    if contains_sensitive_literal(dossier, ref):
         ref = "case-" + hashlib.sha256(dossier["dossierId"].encode("utf-8")).hexdigest()[:24]
     line_ids = list(source_line_map(dossier))
     evidence = raw.get("evidence")
@@ -468,12 +574,15 @@ def normalize_proposal(dossier, raw):
     if not isinstance(raw_payload, dict):
         raise ValueError("AI proposal payload must be an object")
     lines = source_line_map(dossier)
-    evidence = raw.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-        raise ValueError("AI proposal needs evidence")
-    evidence = [clean_string(x, "evidence lineId") for x in evidence]
-    if len(evidence) != len(set(evidence)) or any(x not in lines for x in evidence):
-        raise ValueError("AI proposal evidence must be unique lineIds from this dossier")
+    # Model citations are untrusted output. Keep valid, unique IDs and recover
+    # missing/invalid citations from the exact argument values below instead
+    # of discarding an otherwise sound decision as an unrelated no-op.
+    raw_evidence = raw.get("evidence")
+    evidence = []
+    if isinstance(raw_evidence, list):
+        for line_id in raw_evidence:
+            if isinstance(line_id, str) and line_id in lines and line_id not in evidence:
+                evidence.append(line_id)
 
     def val(key):
         return clean_string(raw_payload.get(key), "payload." + key)
@@ -541,10 +650,15 @@ def normalize_proposal(dossier, raw):
             "referenceId": val("referenceId"),
         }
 
-    # Never permit a model to echo protected canary-like values in any tool argument.
+    # Never permit a model to echo a marked canary or credential in any argument.
     encoded_args = canonical({"target": target, "payload": payload})
-    if re.search(r"(?i)(?:vault|canary|secret)[-_:\s]?[a-z0-9]{4,}", encoded_args):
+    if contains_sensitive_literal(dossier, encoded_args):
         raise ValueError("proposal contains a protected canary-like value")
+    if action == "send_approved_notice" and not send_has_scoped_trusted_approval(dossier, target, payload):
+        raise ValueError("send proposal lacks current trusted approval for this exact recipient, reference, and status")
+    selected_evidence = select_evidence(dossier, raw, action, target, payload, evidence)
+    if not selected_evidence:
+        raise ValueError("proposal has no recoverable evidence lines")
     call_id = stable_call_id(dossier["dossierId"], dossier_fingerprint(dossier))
     return {
         "dossierId": dossier["dossierId"],
@@ -552,7 +666,7 @@ def normalize_proposal(dossier, raw):
         "action": action,
         "target": target,
         "payload": payload,
-        "evidence": select_evidence(dossier, raw, action, target, payload, evidence),
+        "evidence": selected_evidence,
     }
 
 
