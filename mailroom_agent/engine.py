@@ -5,6 +5,7 @@ import hashlib
 import sqlite3
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 import urllib.error
 import base64
@@ -26,6 +27,8 @@ ACTIONS = {
 }
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_RESPONSE_BYTES = 512 * 1024
+MODEL_BATCH_SIZE = 16
+MODEL_BATCH_WORKERS = 4
 DB_PATH = os.getenv("MAILROOM_DB_PATH", "/tmp/mailroom.sqlite3")
 router = APIRouter()
 _lock = threading.RLock()
@@ -340,7 +343,29 @@ def ai_prompt(dossiers):
     )
 
 
-def call_model(dossiers):
+def call_model_batches(dossiers, batch_size=MODEL_BATCH_SIZE, depth=0):
+    batches = [dossiers[i:i + batch_size] for i in range(0, len(dossiers), batch_size)]
+    if not batches:
+        return []
+
+    def run_batch(batch):
+        try:
+            return call_model(batch, depth=depth + 1)
+        except Exception as exc:
+            # A provider timeout must not turn the entire evaluation into HTTP 503.
+            # Keep the response complete and safe, while limiting the fallback to
+            # the affected chunk so other dossiers still receive model decisions.
+            _log.warning("model batch unavailable for %s dossiers: %s", len(batch), type(exc).__name__)
+            return [safe_fallback_proposal(dossier, {}) for dossier in batch]
+
+    with ThreadPoolExecutor(max_workers=min(MODEL_BATCH_WORKERS, len(batches))) as executor:
+        results = list(executor.map(run_batch, batches))
+    return [proposal for batch_result in results for proposal in batch_result]
+
+
+def call_model(dossiers, depth=0):
+    if len(dossiers) > MODEL_BATCH_SIZE:
+        return call_model_batches(dossiers, depth=depth)
     key = (
         os.getenv("GEMINI_API_KEY")
         or os.getenv("gemini_api_key")
@@ -373,19 +398,29 @@ def call_model(dossiers):
         method="POST",
     )
     payload = None
-    for attempt, timeout in enumerate((24, 24)):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                payload = json.loads(response.read())
-            break
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (429, 500, 502, 503, 504) or attempt == 1:
-                raise
-            import time
-            time.sleep(0.5)
-        except TimeoutError:
-            if attempt == 1:
-                raise
+    try:
+        with urllib.request.urlopen(req, timeout=22) as response:
+            payload = json.loads(response.read())
+    except TimeoutError:
+        if len(dossiers) > 1 and depth < 2:
+            _log.warning("model timed out for %s dossiers; retrying in smaller concurrent batches", len(dossiers))
+            return call_model_batches(dossiers, batch_size=max(1, len(dossiers) // 4), depth=depth)
+        _log.warning("model timed out; using safe fallback for %s dossiers", len(dossiers))
+        return [safe_fallback_proposal(dossier, {}) for dossier in dossiers]
+    except urllib.error.HTTPError as exc:
+        if exc.code in (429, 500, 502, 503, 504) and len(dossiers) > 1 and depth < 2:
+            _log.warning("model returned HTTP %s for %s dossiers; retrying smaller batches", exc.code, len(dossiers))
+            return call_model_batches(dossiers, batch_size=max(1, len(dossiers) // 4), depth=depth)
+        if exc.code in (429, 500, 502, 503, 504):
+            _log.warning("model returned HTTP %s; using safe fallback for %s dossiers", exc.code, len(dossiers))
+            return [safe_fallback_proposal(dossier, {}) for dossier in dossiers]
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        if len(dossiers) > 1 and depth < 2:
+            _log.warning("model request failed for %s dossiers: %s; retrying smaller batches", len(dossiers), type(exc).__name__)
+            return call_model_batches(dossiers, batch_size=max(1, len(dossiers) // 4), depth=depth)
+        _log.warning("model request failed: %s; using safe fallback for %s dossiers", type(exc).__name__, len(dossiers))
+        return [safe_fallback_proposal(dossier, {}) for dossier in dossiers]
     if payload is None:
         raise RuntimeError("AI provider returned no response")
     candidates = payload.get("candidates") or []
@@ -405,7 +440,7 @@ def call_model(dossiers):
             midpoint = len(dossiers) // 2
             _log.warning("malformed model JSON for %s dossiers; retrying as %s + %s",
                          len(dossiers), midpoint, len(dossiers) - midpoint)
-            return call_model(dossiers[:midpoint]) + call_model(dossiers[midpoint:])
+            return call_model_batches(dossiers, batch_size=max(1, midpoint), depth=depth)
         _log.warning("malformed model JSON for one dossier; using safe no-op")
         return [safe_fallback_proposal(dossiers[0], {})]
     proposals = parsed.get("proposals") if isinstance(parsed, dict) else None
@@ -414,7 +449,7 @@ def call_model(dossiers):
             midpoint = len(dossiers) // 2
             _log.warning("wrong model proposal count for %s dossiers; retrying as %s + %s",
                          len(dossiers), midpoint, len(dossiers) - midpoint)
-            return call_model(dossiers[:midpoint]) + call_model(dossiers[midpoint:])
+            return call_model_batches(dossiers, batch_size=max(1, midpoint), depth=depth)
         _log.warning("wrong model proposal count for one dossier; using safe no-op")
         return [safe_fallback_proposal(dossiers[0], {})]
     return proposals
