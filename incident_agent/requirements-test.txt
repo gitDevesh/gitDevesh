@@ -1,0 +1,2 @@
+-r requirements.txt
+opentelemetry-proto>=1.30,<2
