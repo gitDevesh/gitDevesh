@@ -417,72 +417,55 @@ def model_prompt(agent_name: str, incident: dict[str, Any], catalog: list[dict[s
     )
 
 
-def compact_argument_properties(catalog: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build the same shallow union accepted by Gemini for large catalogs."""
-    properties: dict[str, Any] = {}
-    conflicts: set[str] = set()
-    for tool in catalog:
-        schema = tool.get("inputSchema") or {}
-        source = schema.get("properties", {}) if isinstance(schema, dict) else {}
-        if not isinstance(source, dict):
-            continue
-        for name, field_schema in source.items():
-            if not isinstance(field_schema, dict):
-                properties.setdefault(name, {})
+def compact_tool_schema(schema: Any) -> dict[str, Any]:
+    """Keep a tool's required keys and shallow value constraints for Gemini."""
+    if not isinstance(schema, dict):
+        return {"type": "object"}
+    properties = schema.get("properties", {})
+    compact: dict[str, Any] = {"type": "object", "properties": {}}
+    if isinstance(properties, dict):
+        for name, field in properties.items():
+            if not isinstance(name, str):
                 continue
-            field_type = field_schema.get("type")
-            compact = {"type": field_type} if field_type in (
-                "string", "number", "integer", "boolean", "array", "object"
-            ) else {}
+            field = field if isinstance(field, dict) else {}
+            field_type = field.get("type")
+            value: dict[str, Any] = {}
+            if field_type in ("string", "number", "integer", "boolean", "array", "object"):
+                value["type"] = field_type
+            enum = field.get("enum")
+            if isinstance(enum, list) and 0 < len(enum) <= 16:
+                value["enum"] = enum
             if field_type == "array":
-                items = field_schema.get("items")
-                if isinstance(items, dict) and items.get("type") in (
-                    "string", "number", "integer", "boolean"
-                ):
-                    compact["items"] = {"type": items["type"]}
-            if name in properties and properties[name] != compact:
-                conflicts.add(name)
-            else:
-                properties[name] = compact
-    for name in conflicts:
-        properties[name] = {}
-    return properties
+                items = field.get("items")
+                if isinstance(items, dict) and items.get("type") in ("string", "number", "integer", "boolean"):
+                    value["items"] = {"type": items["type"]}
+            compact["properties"][name] = value
+    required = schema.get("required")
+    if isinstance(required, list) and all(isinstance(key, str) for key in required):
+        compact["required"] = required
+    if schema.get("additionalProperties") is False:
+        compact["additionalProperties"] = False
+    return compact
 
 
 def proposal_output_schema(names: list[str], catalog: list[dict[str, Any]]) -> dict[str, Any]:
-    """Use a compact catalog-wide schema; validate selected-tool requirements in-app."""
+    """Bind each tool name to its own small argument schema and required keys."""
     by_name = {tool["name"]: tool for tool in catalog}
-    required_guide = []
-    required_sets = []
+    alternatives = []
     for name in names:
-        schema = by_name[name].get("inputSchema") or {}
-        if not isinstance(schema, dict):
-            continue
-        required = schema.get("required", [])
-        if isinstance(required, list) and required:
-            required_guide.append(f"{name}: {', '.join(str(key) for key in required)}")
-            required_sets.append(set(required))
-    common_required = sorted(set.intersection(*required_sets)) if required_sets else []
-    arguments_schema: dict[str, Any] = {
-        "type": "object",
-        "properties": compact_argument_properties(catalog),
-    }
-    if common_required:
-        arguments_schema["required"] = common_required
-    if required_guide:
-        arguments_schema["description"] = (
-            "When toolName is selected, include all required keys for that tool: "
-            + "; ".join(required_guide)[:1800]
-        )
-    return {
-        "type": "object",
-        "properties": {
-            "toolName": {"type": "string", "enum": names},
-            "arguments": arguments_schema,
-            "evidence": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["toolName", "arguments", "evidence"],
-    }
+        tool_schema = by_name[name].get("inputSchema") or {"type": "object"}
+        alternatives.append({
+            "type": "object",
+            "properties": {
+                "toolName": {"type": "string", "enum": [name]},
+                "arguments": compact_tool_schema(tool_schema),
+                "evidence": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["toolName", "arguments", "evidence"],
+        })
+    if len(alternatives) == 1:
+        return alternatives[0]
+    return {"oneOf": alternatives}
 
 
 def planner_schema(
@@ -543,18 +526,30 @@ def call_planner(agent_name: str, incident: dict[str, Any], catalog: list[dict[s
             "maxOutputTokens": 4096,
         },
     }
-    request = urllib.request.Request(
-        f"{endpoint}/models/{MODEL_NAME}:generateContent",
-        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
-        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:
-            provider_payload = json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        # Never log or return provider response bodies, which can echo prompt content.
-        raise RuntimeError(f"model provider returned HTTP {exc.code}") from None
+    request_data = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
+    deadline = time.monotonic() + 17.0
+    attempt = 0
+    while True:
+        request = urllib.request.Request(
+            f"{endpoint}/models/{MODEL_NAME}:generateContent",
+            data=request_data,
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            method="POST",
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("model planning deadline exceeded")
+        try:
+            with urllib.request.urlopen(request, timeout=min(MODEL_TIMEOUT_SECONDS, remaining)) as response:
+                provider_payload = json.loads(response.read())
+            break
+        except urllib.error.HTTPError as exc:
+            # A transient provider 503 is retried once inside the route deadline.
+            # Never log or return provider response bodies; they can echo the prompt.
+            if exc.code == 503 and attempt == 0 and time.monotonic() + 0.1 < deadline:
+                attempt += 1
+                continue
+            raise RuntimeError(f"model provider returned HTTP {exc.code}") from None
     candidates = provider_payload.get("candidates") or []
     if not candidates:
         raise RuntimeError("model provider returned no candidate")
