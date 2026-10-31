@@ -445,9 +445,29 @@ def compact_tool_schema(schema: Any) -> dict[str, Any]:
     required = schema.get("required")
     if isinstance(required, list) and all(isinstance(key, str) for key in required):
         compact["required"] = required
-    if schema.get("additionalProperties") is False:
-        compact["additionalProperties"] = False
+    # Gemini function declarations accept only a subset of JSON Schema. Enforce
+    # additionalProperties locally in validate_schema_args instead of sending it.
     return compact
+
+
+def provider_error_classification(exc: urllib.error.HTTPError) -> str:
+    """Return safe diagnostic labels without logging provider text or user data."""
+    try:
+        payload = json.loads(exc.read(8192))
+        error_payload = payload.get("error", {}) if isinstance(payload, dict) else {}
+    except Exception:
+        error_payload = {}
+    provider_status = error_payload.get("status") if isinstance(error_payload, dict) else None
+    allowed_statuses = {"INVALID_ARGUMENT", "FAILED_PRECONDITION", "RESOURCE_EXHAUSTED", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "INTERNAL", "UNAVAILABLE"}
+    if provider_status in allowed_statuses:
+        status = provider_status.lower()
+    else:
+        status = "unknown"
+    message = error_payload.get("message", "") if isinstance(error_payload, dict) else ""
+    message = message.lower() if isinstance(message, str) else ""
+    recognized = ("additionalproperties", "oneof", "anyof", "responsejsonschema", "functiondeclarations", "toolconfig", "temperature", "model")
+    keyword = next((value for value in recognized if value in message), None)
+    return f"{status}" + (f":{keyword}" if keyword else "")
 
 
 def planner_functions(
@@ -540,6 +560,8 @@ def call_planner(agent_name: str, incident: dict[str, Any], catalog: list[dict[s
             if exc.code == 503 and attempt == 0 and time.monotonic() + 0.1 < deadline:
                 attempt += 1
                 continue
+            if exc.code == 400:
+                log.warning("Gemini planner request rejected (%s)", provider_error_classification(exc))
             raise RuntimeError(f"model provider returned HTTP {exc.code}") from None
     candidates = provider_payload.get("candidates") or []
     if not candidates:
